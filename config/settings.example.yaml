@@ -1,0 +1,27 @@
+# Copie para config/settings.yaml (ou configure pela interface).
+data_sources:
+  - name: demo
+    type: postgres
+    host: postgres-demo        # use host.docker.internal para um Postgres na máquina host
+    port: 5432
+    database: demo
+    username: leitor
+    password: leitor
+  - name: neon
+    type: neon                 # Postgres com sslmode=require por padrão
+    host: ep-exemplo-123456.us-east-2.aws.neon.tech
+    database: neondb
+    username: usuario
+    password: ${NEON_PASSWORD}
+  - name: planilhas
+    type: csv                  # csv ou xlsx; aceita arquivo único ou diretório
+    path: /app/data
+llm:
+  provider: anthropic          # anthropic | openai | gemini
+  model: claude-opus-5-5
+  api_key: ${ANTHROPIC_API_KEY}
+  max_tokens: 16000
+panels:                        # painéis (dashboards) nomeados
+  - name: Principal
+    selected_scripts: []       # nomes dos arquivos em src/dashboards_scripts (sem .py)
+    columns: 2

@@ -1,0 +1,28 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./config:/app/config
+      - ./src/dashboards_scripts:/app/src/dashboards_scripts
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Banco de exemplo para testes manuais: docker compose --profile demo up
+  postgres-demo:
+    image: postgres:17-alpine
+    profiles: ["demo"]
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./docker/demo-init.sql:/docker-entrypoint-initdb.d/init.sql:ro

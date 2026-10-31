@@ -1,0 +1,41 @@
+[project]
+name = "ai-data-visualization"
+version = "0.1.0"
+description = "Dashboards gerados por LLM a partir de bancos PostgreSQL/Neon e arquivos locais"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "anthropic>=2.3.0",
+    "duckdb>=2.0.0",
+    "google-genai>=2.34.0",
+    "openai>=3.41.0",
+    "openpyxl>=3.1.5",
+    "pandas>=3.1.0",
+    "plotly>=7.1.0",
+    "psycopg[binary]>=3.3.6",
+    "pyarrow>=26.0.0",
+    "pydantic>=2.14.2",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "sqlalchemy>=2",
+    "sqlglot>=30.27.0",
+    "streamlit>=1.66.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=60"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/dashboards_scripts/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.17.0",
+]

@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Aplicação
+config/settings.yaml
+data/*
+!data/.gitkeep
+src/dashboards_scripts/*
+!src/dashboards_scripts/.gitkeep

@@ -1,0 +1,13 @@
+.git
+.venv
+.claude
+.specs
+.pytest_cache
+.coverage
+htmlcov
+tests
+data
+config/settings.yaml
+.env
+**/__pycache__
+src/dashboards_scripts/*.py
