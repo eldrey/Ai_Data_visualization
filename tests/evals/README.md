@@ -124,7 +124,11 @@ The split is stratified: cases 05, 10, 15, … of each category are in `cases_te
 
 **Chart type** is read from the figure's traces:
 
-- `line`, `area` and `scatter` are told apart by the scatter trace's mode and fill.
+- `line`, `area` and `scatter` are told apart by the scatter trace's fill and mode:
+  - A trace with a fill is `area`.
+  - A mode that includes `lines` is `line`.
+  - Any other mode is `scatter`, including `markers+text` (points with labels).
+- On a chart type failure, the message shows the whole generated script, because the type comes from `build_chart`.
 - `density_heatmap` counts as `heatmap`.
 - When `chart_type` is a list, any of its types passes.
 

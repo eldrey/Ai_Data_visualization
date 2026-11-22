@@ -250,7 +250,10 @@ def trace_kind(trace) -> str:
     if t in ("scatter", "scattergl"):
         if getattr(trace, "stackgroup", None) or getattr(trace, "fill", None) not in (None, "none"):
             return "area"
-        return "scatter" if (trace.mode or "lines") == "markers" else "line"
+        # mode combina partes com "+": "markers+text" (pontos com rótulo) é dispersão, não linha.
+        # Sem mode, o Plotly desenha linhas.
+        parts = set((trace.mode or "lines").split("+"))
+        return "line" if "lines" in parts else "scatter"
     return {"histogram2d": "heatmap", "densitymapbox": "heatmap"}.get(t, t)
 
 
@@ -330,8 +333,9 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> str | None:
     kinds = {trace_kind(t) for t in fig.data}
     expected = case["chart_type"] if isinstance(case["chart_type"], list) else [case["chart_type"]]
     if not kinds & set().union(*(ACCEPTED_KINDS[t] for t in expected)):
-        pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\nSQL gerado:\n{sql}",
-                    pytrace=False)
+        # o tipo vem do build_chart, então mostra o script inteiro (SQL + build_chart), não só o SQL
+        pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\n"
+                    f"Script gerado:\n{result.code}", pytrace=False)
     return warning
 
 
