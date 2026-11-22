@@ -69,6 +69,9 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 @pytest.fixture(scope="session")
 def source():
+    if not any(DATA_DIR.glob("*.csv")):  # os CSVs não são versionados; `make eval` os gera
+        pytest.exit("Dados de avaliação ausentes em tests/evals/data. Rode `make eval-data` "
+                    "(ou `uv run python tests/evals/generate_data.py`).", returncode=4)
     src = FileSource(DataSourceConfig(name=SOURCE_NAME, type="csv", path=str(DATA_DIR)))
     yield src
     src.close()

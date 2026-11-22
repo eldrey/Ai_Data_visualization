@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help setup up demo down logs build install dev test eval clean
+.PHONY: help setup up demo down logs build install dev test eval eval-data clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -35,8 +35,15 @@ dev: install setup ## Run the app locally without Docker
 test: install ## Run unit tests with coverage (minimum 60%)
 	uv run pytest
 
-eval: install setup ## Run the LLM evaluation (SPLIT=dev|test, default dev; calls the configured LLM)
+EVAL_DATA := $(addprefix tests/evals/data/,cafeterias.csv funcionarios.csv vendas.csv itens_venda.csv compras.csv custos.csv)
+
+eval: install setup eval-data ## Run the LLM evaluation (SPLIT=dev|test, default dev; calls the configured LLM)
 	uv run pytest --eval $(or $(SPLIT),dev)
+
+eval-data: ## Generate the evaluation CSVs if any is missing
+	@missing=0; for f in $(EVAL_DATA); do test -f $$f || missing=1; done; \
+	if [ $$missing = 1 ]; then echo "Generating evaluation data in tests/evals/data..."; \
+	uv run python tests/evals/generate_data.py; fi
 
 clean: ## Remove caches and coverage files
 	rm -rf .pytest_cache .coverage htmlcov

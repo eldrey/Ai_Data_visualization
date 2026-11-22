@@ -18,8 +18,10 @@ uv run python tests/evals/generate_data.py
 
 ## Running
 
+The CSVs in `data/` are not committed. `make eval` generates them first if any is missing, and `make eval-data` does only that step. Running pytest directly without the data stops with a message that points to `make eval-data`.
+
 ```bash
-make eval                     # dev split (default)
+make eval                     # dev split (default); generates data/ if missing
 make eval SPLIT=test          # held-out split
 uv run pytest --eval dev      # same as make eval
 uv run python tests/evals/evaluation_run.py test   # shortcut, same result
