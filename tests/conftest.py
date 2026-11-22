@@ -9,6 +9,66 @@ from src.config import settings
 from src.config.settings import DataSourceConfig
 from src.services.db_connections.file_source import FileSource
 
+EVALS_DIR = Path(__file__).parent / "evals"
+
+
+# ---------------------------------------------------------------- avaliação da LLM (tests/evals)
+# `pytest --eval dev|test` roda só os casos de avaliação; sem a opção, tests/evals não é coletado.
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--eval",
+        choices=("dev", "test"),
+        default=None,
+        help="Roda a avaliação da LLM com tests/evals/cases_<split>.yaml em vez dos testes unitários.",
+    )
+
+
+def _eval_split(config: pytest.Config) -> str | None:
+    return config.getoption("eval", default=None)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if _eval_split(config):
+        config.option.verbose = max(config.option.verbose, 1)  # uma linha por caso
+        # cobertura (e sua meta de 60%) só faz sentido para os testes unitários
+        cov = config.pluginmanager.get_plugin("_cov")
+        if cov is not None:
+            cov.options.no_cov = True
+            controller = getattr(cov, "cov_controller", None)
+            if controller is not None and getattr(controller, "cov", None) is not None:
+                controller.cov.stop()
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    in_evals = collection_path == EVALS_DIR or EVALS_DIR in collection_path.parents
+    if _eval_split(config):
+        if in_evals or collection_path in EVALS_DIR.parents:
+            return None
+        return True  # no modo eval, ignora os testes unitários
+    return True if in_evals else None
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
+    split = _eval_split(config)
+    if not split:
+        return
+    stats = terminalreporter.stats
+    passed = len([r for r in stats.get("passed", []) if r.when == "call"])
+    failed = len({r.nodeid for key in ("failed", "error") for r in stats.get(key, [])})
+    total = terminalreporter._numcollected - len(stats.get("deselected", []))  # sem os excluídos por -k
+    done = passed + failed
+    rate = passed / done * 100 if done else 0.0
+    executed = done / total * 100 if total else 0.0
+    terminalreporter.write_sep(
+        "=",
+        f"Avaliação {split}: {total} testes | {passed} passed | {failed} failed | "
+        f"{rate:.1f}% de acerto | {executed:.0f}% executado",
+        bold=True,
+        green=failed == 0 and done > 0,
+        red=failed > 0,
+    )
+
+
 VALID_SCRIPT = '''import pandas as pd
 import plotly.express as px
 

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help setup up demo down logs build install dev test clean
+.PHONY: help setup up demo down logs build install dev test eval clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -34,6 +34,9 @@ dev: install setup ## Run the app locally without Docker
 
 test: install ## Run unit tests with coverage (minimum 60%)
 	uv run pytest
+
+eval: install setup ## Run the LLM evaluation (SPLIT=dev|test, default dev; calls the configured LLM)
+	uv run pytest --eval $(or $(SPLIT),dev)
 
 clean: ## Remove caches and coverage files
 	rm -rf .pytest_cache .coverage htmlcov
