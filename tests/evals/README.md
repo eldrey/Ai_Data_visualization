@@ -42,7 +42,15 @@ tests/evals/evaluation_run.py::test_case[S01-single] PASSED              [  1%]
 tests/evals/evaluation_run.py::test_case[S02-single] FAILED              [  3%]
 ...
 = Avaliação dev: 64 testes | 61 passed | 3 failed | 95.3% de acerto | 100% executado =
+- Tokens: 82.600 entrada | 34.200 saída | 66 chamadas em 64 casos | custo estimado US$ 1.01 (US$ 0.016/caso, claude-opus-5-5) -
 ```
+
+**How the cost line is computed:**
+
+- **Token counts:** they come from the usage that each provider's API reports, so they are measured, not guessed. Output tokens include reasoning tokens, which are billed as output, and retries are counted too.
+- **Cost:** tokens are multiplied by the prices in `PRICES_PER_MTOK` in `evaluation_run.py`, which holds Anthropic API list prices.
+  - The table has no prices for OpenAI or Gemini models, so for those the line shows only token counts.
+  - Update the table when prices change.
 
 The failure section shows why each case failed (wrong values, row count, chart type, rejected script) and the generated SQL.
 

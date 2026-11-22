@@ -67,6 +67,38 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         green=failed == 0 and done > 0,
         red=failed > 0,
     )
+    _write_usage_summary(terminalreporter)
+
+
+def _fmt_int(n: int) -> str:
+    return f"{n:,}".replace(",", ".")
+
+
+def _write_usage_summary(terminalreporter) -> None:
+    """Soma os tokens que cada caso registrou em user_properties e estima o custo da rodada."""
+    records = [
+        value
+        for key in ("passed", "failed")
+        for report in terminalreporter.stats.get(key, [])
+        if report.when == "call"
+        for name, value in report.user_properties
+        if name == "llm_usage"
+    ]
+    if not records:
+        return
+    total = {k: sum(r[k] for r in records) for k in ("calls", "input", "output", "cache_read", "cache_write")}
+    models = sorted({r["model"] for r in records})
+    line = (
+        f"Tokens: {_fmt_int(total['input'])} entrada | {_fmt_int(total['output'])} saída"
+        + (f" | {_fmt_int(total['cache_read'] + total['cache_write'])} cache" if total["cache_read"] + total["cache_write"] else "")
+        + f" | {total['calls']} chamadas em {len(records)} casos"
+    )
+    if all(r["cost"] is not None for r in records):
+        cost = sum(r["cost"] for r in records)
+        line += f" | custo estimado US$ {cost:.2f} (US$ {cost / len(records):.3f}/caso, {', '.join(models)})"
+    else:
+        line += f" | custo não estimado: sem preço para {', '.join(models)}"
+    terminalreporter.write_sep("-", line)
 
 
 VALID_SCRIPT = '''import pandas as pd

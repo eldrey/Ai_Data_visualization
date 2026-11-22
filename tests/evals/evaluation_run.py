@@ -212,8 +212,46 @@ def trace_kind(trace) -> str:
     return {"histogram2d": "heatmap", "densitymapbox": "heatmap"}.get(t, t)
 
 
+# ------------------------------------------------------------------ custo
+# US$ por milhão de tokens: (entrada, saída, leitura de cache). Escrita em cache = 1,25 x entrada.
+# Preços da API da Anthropic (tabela de 2026-11-03); modelos fora da lista mostram só os tokens.
+PRICES_PER_MTOK = {
+    "claude-fable-5-2": (8.00, 40.00, 0.20),
+    "claude-opus-5-5": (4.00, 20.00, 0.20),
+    "claude-opus-5": (5.00, 25.00, 0.50),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.10),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01),
+}
+
+
+def usage_record(model: str, usage) -> dict:
+    record = {
+        "model": model,
+        "calls": usage.calls,
+        "input": usage.input_tokens,
+        "output": usage.output_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cache_write": usage.cache_write_tokens,
+        "cost": None,
+    }
+    price = PRICES_PER_MTOK.get(model)
+    if price:
+        inp, out, cache_read = price
+        record["cost"] = (usage.input_tokens * inp + usage.output_tokens * out
+                          + usage.cache_read_tokens * cache_read + usage.cache_write_tokens * inp * 1.25) / 1e6
+    return record
+
+
 # ------------------------------------------------------------------ teste
-def test_case(case: dict, llm, source: FileSource, snapshot) -> None:
+def test_case(case: dict, llm, source: FileSource, snapshot, request: pytest.FixtureRequest) -> None:
+    before = llm.usage.snapshot()
+    try:
+        _run_case(case, llm, source, snapshot)
+    finally:  # registra o consumo mesmo quando o caso falha; o relatório final soma tudo
+        request.node.user_properties.append(("llm_usage", usage_record(llm.cfg.model, llm.usage - before)))
+
+
+def _run_case(case: dict, llm, source: FileSource, snapshot) -> None:
     tables = [(SCHEMA, t) for t in case["tables"]]
     result = generate_chart_code(llm, source, SOURCE_NAME, tables, case["request"], title=case["id"])
 

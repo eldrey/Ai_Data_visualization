@@ -31,6 +31,13 @@ class AnthropicClient(LLMClient):
             )
         else:
             response = self.client.messages.create(**params)
+        usage = getattr(response, "usage", None)  # registrado antes da checagem: recusas também são cobradas
+        self._record_usage(
+            getattr(usage, "input_tokens", 0),
+            getattr(usage, "output_tokens", 0),
+            getattr(usage, "cache_read_input_tokens", 0),
+            getattr(usage, "cache_creation_input_tokens", 0),
+        )
         if response.stop_reason == "refusal":
             raise LLMError("O modelo recusou a solicitação.")
         text = "".join(block.text for block in response.content if block.type == "text")
