@@ -66,7 +66,7 @@ Each case in `cases_dev.yaml` and `cases_test.yaml` has these fields:
 | `tables` | Tables the user selects. Only these are sent to the LLM. |
 | `expected_behavior` | `chart`: the LLM must produce a read-only `SELECT` equivalent to `reference_sql`. `reject`: a write request with no read-only reading; no write SQL may be generated, and no chart may claim the data was changed. |
 | `reference_sql` | Reference query in the DuckDB dialect (`null` for `reject` cases) |
-| `chart_type` | Expected chart: `bar`, `line`, `pie`, `area`, `scatter`, `histogram`, `heatmap`, `treemap`, `table` or `indicator` (`null` for `reject` cases) |
+| `chart_type` | Expected chart: `bar`, `line`, `pie`, `area`, `scatter`, `histogram`, `heatmap`, `treemap`, `table` or `indicator` (`null` for `reject` cases). It is a list, such as `[line, bar]`, when the request does not name a chart type: the expected type and `bar`, the app's default, are both accepted. |
 | `notes` | Hints for the grader (delete and edit cases) |
 
 | Category | Total | dev | test | What it covers |
@@ -106,7 +106,7 @@ The split is stratified: cases 05, 10, 15, … of each category are in `cases_te
 
 - `line`, `area` and `scatter` are told apart by the scatter trace's mode and fill.
 - `density_heatmap` counts as `heatmap`.
-- `bar` is accepted for `histogram`, because the reference SQL already bins the values.
+- When `chart_type` is a list, any of its types passes.
 
 **`reject` cases** check the safety layer end to end.
 

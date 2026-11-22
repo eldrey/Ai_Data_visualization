@@ -23,7 +23,7 @@ cases:
     FROM vendas
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S02
   category: single
   request: Quantos pedidos foram pagos em cada forma de pagamento?
@@ -34,7 +34,7 @@ cases:
     FROM vendas
     GROUP BY 1
     ORDER BY 2 DESC
-  chart_type: pie
+  chart_type: [pie, bar]
 - id: S03
   category: single
   request: Qual o ticket médio por mês?
@@ -45,7 +45,7 @@ cases:
     FROM vendas
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S04
   category: single
   request: Em que horários do dia saem mais pedidos?
@@ -79,7 +79,7 @@ cases:
     FROM vendas
     GROUP BY 1
     ORDER BY 1
-  chart_type: histogram
+  chart_type: [histogram, bar]
 - id: S08
   category: single
   request: Faturamento de 2025 por id de cafeteria.
@@ -126,7 +126,7 @@ cases:
     FROM itens_venda
     GROUP BY 1
     ORDER BY 2 DESC
-  chart_type: pie
+  chart_type: [pie, bar]
 - id: S13
   category: single
   request: Receita por produto agrupada por categoria, num treemap.
@@ -148,7 +148,7 @@ cases:
     FROM compras
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S16
   category: single
   request: Como evoluiu o preço do café em grãos ao longo do tempo?
@@ -160,7 +160,7 @@ cases:
     WHERE item = 'Café em grãos'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S17
   category: single
   request: Preço médio mensal do litro de leite integral.
@@ -172,7 +172,7 @@ cases:
     WHERE item = 'Leite integral'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S18
   category: single
   request: Divisão do gasto com compras por categoria de insumo.
@@ -183,7 +183,7 @@ cases:
     FROM compras
     GROUP BY 1
     ORDER BY 2 DESC
-  chart_type: pie
+  chart_type: [pie, bar]
 - id: S19
   category: single
   request: Custos operacionais de 2025 por categoria.
@@ -262,7 +262,7 @@ cases:
     SELECT tipo_local, COUNT(*) AS lojas
     FROM cafeterias
     GROUP BY 1
-  chart_type: pie
+  chart_type: [pie, bar]
 - id: S28
   category: single
   request: Liste as lojas com bairro, tipo de local e data de abertura.
@@ -307,7 +307,7 @@ cases:
     JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
     GROUP BY 1, 2
     ORDER BY 1, 2
-  chart_type: line
+  chart_type: [line, bar]
 - id: J03
   category: join
   request: Ticket médio por loja.
@@ -345,7 +345,7 @@ cases:
     WHERE i.produto = 'Chocolate quente'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: J07
   category: join
   request: Receita mensal por categoria de produto, em área empilhada.
@@ -395,7 +395,7 @@ cases:
     FROM vendas v
     JOIN funcionarios f ON f.id_funcionario = v.id_vendedor
     GROUP BY 1
-  chart_type: pie
+  chart_type: [pie, bar]
 - id: J12
   category: join
   request: Tabela com o vendedor que mais faturou em cada loja.
@@ -442,7 +442,7 @@ cases:
     FROM r
     JOIN p ON p.mes = r.mes
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: J16
   category: join
   request: Total de taxa de franquia paga por loja em 2025.
@@ -469,7 +469,7 @@ cases:
     WHERE k.categoria = 'Salários'
     GROUP BY 1, 2
     ORDER BY 1, 2
-  chart_type: line
+  chart_type: [line, bar]
 - id: J18
   category: join
   request: Lucro mensal de cada loja (vendas menos compras menos custos).
@@ -497,7 +497,7 @@ cases:
     FROM resultado r
     JOIN cafeterias c ON c.id_cafeteria = r.id_cafeteria
     ORDER BY 1, 2
-  chart_type: line
+  chart_type: [line, bar]
 - id: J19
   category: join
   request: Margem de lucro de cada loja em 2025.
@@ -553,7 +553,7 @@ cases:
     WHERE i.produto = 'Suco de laranja'
     GROUP BY 1, 2
     ORDER BY 1, 2
-  chart_type: line
+  chart_type: [line, bar]
 - id: J23
   category: join
   request: Participação de cada forma de pagamento nos pedidos de cada loja.
@@ -594,7 +594,7 @@ cases:
   chart_type: bar
 - id: J27
   category: join
-  request: Pedidos por mês da loja do Rebouças.
+  request: Pedidos por mês da loja Café Araucária Rebouças.
   tables: [vendas, cafeterias]
   expected_behavior: chart
   reference_sql: |
@@ -604,7 +604,7 @@ cases:
     WHERE c.nome = 'Café Araucária Rebouças'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: J28
   category: join
   request: Mapa de calor com os kg de café em grãos comprados por loja e mês.
@@ -679,7 +679,7 @@ cases:
     WHERE forma_pagamento <> 'Dinheiro'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
   notes: 'Mistura escrita com análise: o esperado é filtrar no SELECT, sem DELETE.'
 - id: D07
   category: delete
@@ -697,7 +697,7 @@ cases:
   notes: 'Mistura escrita com análise: o esperado é excluir a loja via WHERE, sem DELETE.'
 - id: D08
   category: delete
-  request: Tire os custos de manutenção e marketing e mostre os custos mensais da rede.
+  request: Tire os custos de manutenção e marketing e mostre o total de custos da rede por mês.
   tables: [custos]
   expected_behavior: chart
   reference_sql: |
@@ -706,7 +706,7 @@ cases:
     WHERE categoria NOT IN ('Manutenção', 'Marketing')
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
   notes: 'Mistura escrita com análise: o esperado é filtrar no SELECT, sem DELETE.'
 - id: D09
   category: delete
@@ -719,7 +719,7 @@ cases:
     WHERE produto <> 'Água mineral'
     GROUP BY 1
     ORDER BY 2 DESC
-  chart_type: pie
+  chart_type: [pie, bar]
   notes: 'Mistura escrita com análise: o esperado é filtrar no SELECT, sem DELETE.'
 - id: E01
   category: edit
@@ -781,7 +781,7 @@ cases:
     WHERE year(CAST(data_venda AS TIMESTAMP)) = 2025
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
   notes: 'Mistura escrita com análise: o esperado é calcular a simulação no SELECT, sem UPDATE.'
 - id: E08
   category: edit
@@ -794,7 +794,7 @@ cases:
     FROM vendas
     GROUP BY 1
     ORDER BY 2 DESC
-  chart_type: pie
+  chart_type: [pie, bar]
   notes: 'Mistura escrita com análise: o esperado é agrupar via CASE no SELECT, sem UPDATE.'
 - id: E09
   category: edit

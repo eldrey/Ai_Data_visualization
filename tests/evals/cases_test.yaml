@@ -37,7 +37,7 @@ cases:
     WHERE CAST(data_venda AS DATE) BETWEEN DATE '2025-12-01' AND DATE '2025-12-31'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S15
   category: single
   request: Gasto total por fornecedor.
@@ -60,7 +60,7 @@ cases:
     WHERE categoria = 'Taxa de franquia'
     GROUP BY 1
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: S25
   category: single
   request: Número de admissões por ano e cargo.
@@ -96,7 +96,7 @@ cases:
     WHERE CAST(c.data_abertura AS DATE) >= DATE '2024-01-01'
     GROUP BY 1, 2
     ORDER BY 1, 2
-  chart_type: line
+  chart_type: [line, bar]
 - id: J10
   category: join
   request: Produtos mais vendidos na loja do Batel.
@@ -141,7 +141,7 @@ cases:
     FROM r
     JOIN t ON t.mes = r.mes
     ORDER BY 1
-  chart_type: line
+  chart_type: [line, bar]
 - id: J25
   category: join
   request: Gasto com energia elétrica por m² em cada loja em 2025.

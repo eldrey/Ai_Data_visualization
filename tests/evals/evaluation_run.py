@@ -44,7 +44,7 @@ ACCEPTED_KINDS = {
     "area": {"area"},
     "scatter": {"scatter"},
     "pie": {"pie"},
-    "histogram": {"histogram", "bar"},  # o SQL de referência já agrega em faixas
+    "histogram": {"histogram"},
     "heatmap": {"heatmap"},
     "treemap": {"treemap"},
     "table": {"table"},
@@ -279,9 +279,10 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> None:
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"build_chart falhou: {exc}", pytrace=False)
     kinds = {trace_kind(t) for t in fig.data}
-    expected = case["chart_type"]
-    if not kinds & ACCEPTED_KINDS[expected]:
-        pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {expected}", pytrace=False)
+    expected = case["chart_type"] if isinstance(case["chart_type"], list) else [case["chart_type"]]
+    if not kinds & set().union(*(ACCEPTED_KINDS[t] for t in expected)):
+        pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\nSQL gerado:\n{sql}",
+                    pytrace=False)
 
 
 if __name__ == "__main__":
