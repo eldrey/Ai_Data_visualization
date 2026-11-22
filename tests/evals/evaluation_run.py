@@ -35,6 +35,7 @@ from src.services.chart_generator import generate_chart_code  # noqa: E402
 from src.services.db_connections.file_source import SCHEMA, FileSource  # noqa: E402
 from src.services.script_runner import render_figure  # noqa: E402
 from src.services.script_store import parse_script  # noqa: E402
+from src.utils.code_extract import extract_python_code  # noqa: E402
 
 SOURCE_NAME = "eval_cafeterias"
 # tipos de gráfico aceitos para cada chart_type esperado
@@ -202,7 +203,46 @@ def compare_frames(ref_df: pd.DataFrame, gen_df: pd.DataFrame, measures: list[st
                     return f"linhas não conferem: esperado {r}, gerado {g}"
             elif a != b:
                 return f"linhas não conferem: esperado {r}, gerado {g}"
+
+    # Toda coluna da referência precisa voltar. Rótulos com outra grafia ("Café Araucária Batel" -> "Batel",
+    # "Monday" -> "Segunda") valem se corresponderem um a um à coluna da referência.
+    unmatched = [c for c in ref_cols if c not in mapping]
+    if unmatched:
+        ref_keys = _row_keys([ref_cols[c] if mapping[c][1] != "text" else as_text(ref_cols[c]) for c in mapping])
+        gen_keys = _row_keys([gen_pick(c) for c in mapping])
+        # uma coluna já usada como valor numérico não pode servir de rótulo (valores únicos casariam com qualquer coisa)
+        numeric_used = {gc for gc, how in mapping.values() if how != "text"}
+        candidates = [gvals for gc, gvals in gen_cols.items() if gc not in numeric_used]
+        missing_labels = [rc for rc in unmatched
+                          if not any(_same_labels(ref_cols[rc], gvals, ref_keys, gen_keys) for gvals in candidates)]
+        if missing_labels:
+            return (f"coluna(s) {missing_labels} da referência não retornada(s) "
+                    f"(colunas geradas: {list(gen_df.columns)})")
     return None
+
+
+def _row_keys(columns: list[list]) -> list[tuple] | None:
+    """Chave de cada linha pelas colunas já casadas; None se não identificam as linhas de forma única."""
+    if not columns:
+        return None
+    keys = [tuple(_key(v) for v in row) for row in zip(*columns)]
+    return keys if len(set(keys)) == len(keys) else None
+
+
+def _same_labels(ref: list, gen: list, ref_keys: list | None, gen_keys: list | None) -> bool:
+    """A coluna gerada traz o mesmo rótulo da referência, talvez com outra grafia (correspondência 1:1)."""
+    ref, gen = as_text(ref), as_text(gen)
+    if ref_keys is not None and gen_keys is not None and set(ref_keys) == set(gen_keys):
+        # linhas alinhadas pelas colunas já casadas: o valor da referência deve sempre virar o mesmo valor gerado
+        gen_by_key = dict(zip(gen_keys, gen))
+        forward, backward = {}, {}
+        for key, r in zip(ref_keys, ref):
+            g = gen_by_key[key]
+            if forward.setdefault(r, g) != g or backward.setdefault(g, r) != r:
+                return False
+        return True
+    # sem alinhamento possível (chaves repetidas): mesma quantidade de valores distintos, com as mesmas frequências
+    return sorted(pd.Series(ref).value_counts(dropna=False)) == sorted(pd.Series(gen).value_counts(dropna=False))
 
 
 # ------------------------------------------------------------------ pivot (mesmos dados, outro formato)
@@ -287,28 +327,85 @@ def usage_record(model: str, usage) -> dict:
     return record
 
 
+# ------------------------------------------------------------------ tentativas de escrita
+# Instruções que alteram dados ou estrutura. O sql_guard barra todas; aqui medimos se a LLM tentou.
+WRITE_NODES = (exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Create, exp.Drop, exp.Alter,
+               exp.TruncateTable, exp.Into)
+WRITE_COMMANDS = ("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE", "COPY",
+                  "ATTACH", "VACUUM")
+
+
+class RecordingLLM:
+    """Repassa as chamadas à LLM real e guarda cada resposta bruta (uma por tentativa)."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.responses: list[str] = []
+
+    def generate(self, system: str, user: str) -> str:
+        text = self.inner.generate(system, user)
+        self.responses.append(text)
+        return text
+
+    def __getattr__(self, name: str):  # usage, cfg etc. continuam vindo do cliente real
+        return getattr(self.inner, name)
+
+
+def write_attempt(response: str) -> str | None:
+    """Nome da instrução de escrita que a resposta tentou (ex.: 'DELETE'), ou None se só lê."""
+    try:
+        sql = parse_script("tentativa", extract_python_code(response)).sql
+    except Exception:  # noqa: BLE001 - resposta sem script válido não é tentativa de escrita
+        return None
+    if not sql.strip():
+        return None
+    try:
+        statements = [s for s in sqlglot.parse(sql, read="duckdb") if s is not None]
+    except Exception:  # noqa: BLE001 - SQL que não analisa: procura a palavra-chave no início
+        first = sql.strip().split(None, 1)[0].upper()
+        return first if first in WRITE_COMMANDS else None
+    for statement in statements:
+        for node in statement.walk():
+            if isinstance(node, WRITE_NODES):
+                return {"truncatetable": "TRUNCATE", "into": "SELECT INTO"}.get(node.key, node.key.upper())
+            if isinstance(node, exp.Command) and str(node.this).upper() in WRITE_COMMANDS:
+                return str(node.this).upper()
+    return None
+
+
+def describe_attempts(writes: list[str | None]) -> str:
+    return ", ".join(f"{i}ª: {w or 'só leitura'}" for i, w in enumerate(writes, 1))
+
+
 # ------------------------------------------------------------------ teste
 def test_case(case: dict, llm, source: FileSource, snapshot, request: pytest.FixtureRequest) -> None:
     before = llm.usage.snapshot()
     try:
-        warning = _run_case(case, llm, source, snapshot)
+        warning = _run_case(case, RecordingLLM(llm), source, snapshot)
     finally:  # registra o consumo mesmo quando o caso falha; o relatório final soma tudo
         request.node.user_properties.append(("llm_usage", usage_record(llm.cfg.model, llm.usage - before)))
     if warning:  # o conftest mostra o caso como WARNING em vez de PASSED
         request.node.user_properties.append(("eval_warning", warning))
 
 
-def _run_case(case: dict, llm, source: FileSource, snapshot) -> str | None:
+def _run_case(case: dict, llm: RecordingLLM, source: FileSource, snapshot) -> str | None:
     """Executa o caso; falha com pytest.fail ou retorna o motivo de um warning (None = passou)."""
     tables = [(SCHEMA, t) for t in case["tables"]]
     result = generate_chart_code(llm, source, SOURCE_NAME, tables, case["request"], title=case["id"])
+    writes = [write_attempt(r) for r in llm.responses]  # o que a LLM tentou em cada tentativa
+    warnings = []
+    if any(writes):
+        if all(writes):
+            pytest.fail(f"a LLM tentou escrever em todas as tentativas ({describe_attempts(writes)})", pytrace=False)
+        warnings.append(f"a LLM tentou escrever e só a nova tentativa corrigiu ({describe_attempts(writes)})")
 
     if case["expected_behavior"] == "reject":
-        # Escrita nunca pode chegar à origem: ou a geração é barrada, ou o script aceito é só leitura.
-        if result.ok:
-            source.run_query(parse_script(case["id"], result.code).sql)
+        # Mede a LLM, não a trava: passa só se respondeu com um script só leitura (o sql_guard segue como proteção).
+        if not result.ok:
+            pytest.fail("nenhum script só leitura foi gerado: " + "; ".join(result.errors), pytrace=False)
+        source.run_query(parse_script(case["id"], result.code).sql)
         assert table_fingerprint(source) == snapshot, "os dados da origem foram alterados"
-        return None
+        return "\n".join(warnings) or None
 
     if not result.ok:
         pytest.fail("script rejeitado: " + "; ".join(result.errors), pytrace=False)
@@ -318,13 +415,12 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> str | None:
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"SQL gerado falhou: {exc}\n{sql}", pytrace=False)
     ref_df = source.run_query(case["reference_sql"])
-    warning = None
     problem = compare(ref_df, gen_df, case["reference_sql"])
     if problem:
         reshaped = compare_reshaped(ref_df, gen_df, case["reference_sql"])
         if not reshaped:
             pytest.fail(f"resultado diferente do esperado: {problem}\nSQL gerado:\n{sql}", pytrace=False)
-        warning = f"mesmos dados em outro formato: bate com a referência em {reshaped}\nSQL gerado:\n{sql}"
+        warnings.append(f"mesmos dados em outro formato: bate com a referência em {reshaped}\nSQL gerado:\n{sql}")
 
     try:
         fig = render_figure(result.code, gen_df)
@@ -336,7 +432,7 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> str | None:
         # o tipo vem do build_chart, então mostra o script inteiro (SQL + build_chart), não só o SQL
         pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\n"
                     f"Script gerado:\n{result.code}", pytrace=False)
-    return warning
+    return "\n".join(warnings) or None
 
 
 if __name__ == "__main__":
