@@ -161,9 +161,12 @@ def match_column(ref: list, gen: list) -> float | str | None:
 
 def compare(ref_df: pd.DataFrame, gen_df: pd.DataFrame, ref_sql: str) -> str | None:
     """Compara o resultado gerado com o de referência; retorna o motivo da falha ou None."""
+    return compare_frames(ref_df, gen_df, measure_columns(ref_sql, ref_df))
+
+
+def compare_frames(ref_df: pd.DataFrame, gen_df: pd.DataFrame, measures: list[str]) -> str | None:
     if len(ref_df) != len(gen_df):
         return f"{len(gen_df)} linhas geradas, {len(ref_df)} esperadas"
-    measures = measure_columns(ref_sql, ref_df)
     ref_cols = {c: normalize(ref_df[c]) for c in ref_df.columns}
     gen_cols = {c: normalize(gen_df[c]) for c in gen_df.columns}
     mapping: dict[str, tuple[str, float | str]] = {}
@@ -199,6 +202,45 @@ def compare(ref_df: pd.DataFrame, gen_df: pd.DataFrame, ref_sql: str) -> str | N
                     return f"linhas não conferem: esperado {r}, gerado {g}"
             elif a != b:
                 return f"linhas não conferem: esperado {r}, gerado {g}"
+    return None
+
+
+# ------------------------------------------------------------------ pivot (mesmos dados, outro formato)
+MAX_PIVOT_VALUES = 12  # só vira coluna uma dimensão com poucos valores distintos
+
+
+def pivot_variants(ref_df: pd.DataFrame, measures: list[str]) -> list[tuple[str, pd.DataFrame, list[str]]]:
+    """Versões da referência com os mesmos dados reorganizados: (descrição, tabela, medidas).
+
+    - formato largo (2+ medidas) -> longo: uma linha por dimensão e medida (unpivot);
+    - formato longo -> largo: uma dimensão de poucos valores vira colunas (pivot).
+    Variantes ambíguas (chaves duplicadas) são descartadas em vez de agregadas.
+    """
+    dims = [c for c in ref_df.columns if c not in measures]
+    variants = []
+    if len(measures) >= 2:
+        long_df = ref_df.melt(id_vars=dims, value_vars=measures, var_name="_medida", value_name="_valor")
+        variants.append((f"formato longo (unpivot de {', '.join(measures)})", long_df, ["_valor"]))
+    for col in dims:
+        if not 2 <= ref_df[col].nunique(dropna=False) <= MAX_PIVOT_VALUES:
+            continue
+        index = [c for c in dims if c != col]
+        if ref_df.duplicated(index + [col]).any():
+            continue
+        base = ref_df if index else ref_df.assign(_linha=0)
+        wide = base.pivot(index=index or ["_linha"], columns=col, values=measures)
+        wide.columns = [str(v) if len(measures) == 1 else f"{m} {v}" for m, v in wide.columns]
+        wide = wide.reset_index().drop(columns=["_linha"], errors="ignore")
+        new_measures = [c for c in wide.columns if c not in index]
+        variants.append((f"formato largo (pivot de {col})", wide, new_measures))
+    return variants
+
+
+def compare_reshaped(ref_df: pd.DataFrame, gen_df: pd.DataFrame, ref_sql: str) -> str | None:
+    """Se a referência reorganizada bater com o resultado, retorna a descrição do formato."""
+    for desc, variant, measures in pivot_variants(ref_df, measure_columns(ref_sql, ref_df)):
+        if compare_frames(variant, gen_df, measures) is None:
+            return desc
     return None
 
 
@@ -246,12 +288,15 @@ def usage_record(model: str, usage) -> dict:
 def test_case(case: dict, llm, source: FileSource, snapshot, request: pytest.FixtureRequest) -> None:
     before = llm.usage.snapshot()
     try:
-        _run_case(case, llm, source, snapshot)
+        warning = _run_case(case, llm, source, snapshot)
     finally:  # registra o consumo mesmo quando o caso falha; o relatório final soma tudo
         request.node.user_properties.append(("llm_usage", usage_record(llm.cfg.model, llm.usage - before)))
+    if warning:  # o conftest mostra o caso como WARNING em vez de PASSED
+        request.node.user_properties.append(("eval_warning", warning))
 
 
-def _run_case(case: dict, llm, source: FileSource, snapshot) -> None:
+def _run_case(case: dict, llm, source: FileSource, snapshot) -> str | None:
+    """Executa o caso; falha com pytest.fail ou retorna o motivo de um warning (None = passou)."""
     tables = [(SCHEMA, t) for t in case["tables"]]
     result = generate_chart_code(llm, source, SOURCE_NAME, tables, case["request"], title=case["id"])
 
@@ -260,7 +305,7 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> None:
         if result.ok:
             source.run_query(parse_script(case["id"], result.code).sql)
         assert table_fingerprint(source) == snapshot, "os dados da origem foram alterados"
-        return
+        return None
 
     if not result.ok:
         pytest.fail("script rejeitado: " + "; ".join(result.errors), pytrace=False)
@@ -270,9 +315,13 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> None:
     except Exception as exc:  # noqa: BLE001
         pytest.fail(f"SQL gerado falhou: {exc}\n{sql}", pytrace=False)
     ref_df = source.run_query(case["reference_sql"])
+    warning = None
     problem = compare(ref_df, gen_df, case["reference_sql"])
     if problem:
-        pytest.fail(f"resultado diferente do esperado: {problem}\nSQL gerado:\n{sql}", pytrace=False)
+        reshaped = compare_reshaped(ref_df, gen_df, case["reference_sql"])
+        if not reshaped:
+            pytest.fail(f"resultado diferente do esperado: {problem}\nSQL gerado:\n{sql}", pytrace=False)
+        warning = f"mesmos dados em outro formato: bate com a referência em {reshaped}\nSQL gerado:\n{sql}"
 
     try:
         fig = render_figure(result.code, gen_df)
@@ -283,6 +332,7 @@ def _run_case(case: dict, llm, source: FileSource, snapshot) -> None:
     if not kinds & set().union(*(ACCEPTED_KINDS[t] for t in expected)):
         pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\nSQL gerado:\n{sql}",
                     pytrace=False)
+    return warning
 
 
 if __name__ == "__main__":

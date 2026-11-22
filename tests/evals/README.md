@@ -35,15 +35,21 @@ The evaluator calls the LLM set in `config/settings.yaml`, with API keys read fr
   - `-x` stops at the first failure.
   - `--lf` reruns only the cases that failed in the last run.
 
-Output has one line per case with its progress percentage and result, and a report line at the end:
+Output has one line per case with its progress percentage and result (`PASSED`, `WARNING` or `FAILED`), and a report line at the end:
 
 ```text
 tests/evals/evaluation_run.py::test_case[S01-single] PASSED              [  1%]
 tests/evals/evaluation_run.py::test_case[S02-single] FAILED              [  3%]
+tests/evals/evaluation_run.py::test_case[J24-join] WARNING               [ 68%]
 ...
-= Avaliação dev: 64 testes | 61 passed | 3 failed | 95.3% de acerto | 100% executado =
+= Avaliação dev: 64 testes | 60 passed | 2 warning | 2 failed | 93.8% de acerto (96.9% com warnings) | 100% executado =
 - Tokens: 82.600 entrada | 34.200 saída | 66 chamadas em 64 casos | custo estimado US$ 1.01 (US$ 0.016/caso, claude-opus-5-5) -
 ```
+
+- **`de acerto`:** counts only `PASSED` cases.
+- **`com warnings`:** also counts `WARNING` cases.
+- **Exit code:** a run with warnings but no failures exits with code 0.
+- **`WARNINGS DA AVALIAÇÃO` section:** lists each warning with the format it matched and the generated SQL.
 
 **How the cost line is computed:**
 
@@ -86,7 +92,7 @@ The split is stratified: cases 05, 10, 15, … of each category are in `cases_te
 
 1. The generated script is accepted.
 2. Its `SQL` runs on `data/`.
-3. Its result matches the `reference_sql` result.
+3. Its result matches the `reference_sql` result. If it only matches after reorganizing the reference, the case is a WARNING; see below.
 4. `build_chart` returns a figure of the expected type.
 
 **How results are compared.** Values are compared, not SQL text.
@@ -101,6 +107,20 @@ The split is stratified: cases 05, 10, 15, … of each category are in `cases_te
   - A month written as `2024-01` or as `2024-01-01`.
   - Numbers in place of text, such as a year.
   - Label columns in another wording (for example, weekday names in Portuguese). These only count when they match.
+
+**Same data in another layout (WARNING).** Sometimes the generated result fails the comparison above only because its table is organized differently. Before marking the case as failed, the evaluator reorganizes the *reference* and compares again, with the same rules:
+
+| Reference layout | Variant tried | Example |
+| --- | --- | --- |
+| Wide, with 2 or more measures | Long: one row per dimension and measure (unpivot) | `J24`: `loja, admissoes, desligamentos` becomes `loja, medida, valor` |
+| Long, with a dimension of 2–12 distinct values | Wide: that dimension's values become columns (pivot) | `J29`: `produto, periodo, preco` becomes `produto, Antes, Depois` |
+
+- **WARNING:** a variant matches exactly. The data is correct, but the layout differs from the reference. The chart type is still checked, and a wrong chart type still fails.
+- **FAILED:** no variant matches.
+- **What is not accepted:**
+  - Results with extra rows, such as a top 10 that returns every row.
+  - More detailed results that only add up to the reference, such as totals broken down by category.
+  - A pivot whose keys would be duplicated. The evaluator skips it instead of guessing an aggregation.
 
 **Chart type** is read from the figure's traces:
 

@@ -48,23 +48,46 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return True if in_evals else None
 
 
+WARNED = "warned"  # categoria das estatísticas para casos que passaram com warning
+
+
+def _eval_warning(report) -> str | None:
+    return next((value for name, value in getattr(report, "user_properties", []) if name == "eval_warning"), None)
+
+
+def pytest_report_teststatus(report, config: pytest.Config):
+    # Caso que passou só depois de reorganizar a referência (pivot): mostrado como WARNING, não conta como falha.
+    if _eval_split(config) and report.when == "call" and report.passed and _eval_warning(report):
+        return WARNED, "W", ("WARNING", {"yellow": True})
+    return None
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
     split = _eval_split(config)
     if not split:
         return
     stats = terminalreporter.stats
+    warned_reports = stats.get(WARNED, [])
+    if warned_reports:
+        terminalreporter.write_sep("=", "WARNINGS DA AVALIAÇÃO", yellow=True)
+        for report in warned_reports:
+            terminalreporter.write_sep("_", report.head_line or report.nodeid, yellow=True)
+            terminalreporter.write_line(_eval_warning(report))
     passed = len([r for r in stats.get("passed", []) if r.when == "call"])
+    warned = len(warned_reports)
     failed = len({r.nodeid for key in ("failed", "error") for r in stats.get(key, [])})
     total = terminalreporter._numcollected - len(stats.get("deselected", []))  # sem os excluídos por -k
-    done = passed + failed
+    done = passed + warned + failed
     rate = passed / done * 100 if done else 0.0
+    rate_warn = (passed + warned) / done * 100 if done else 0.0
     executed = done / total * 100 if total else 0.0
     terminalreporter.write_sep(
         "=",
-        f"Avaliação {split}: {total} testes | {passed} passed | {failed} failed | "
-        f"{rate:.1f}% de acerto | {executed:.0f}% executado",
+        f"Avaliação {split}: {total} testes | {passed} passed | {warned} warning | {failed} failed | "
+        f"{rate:.1f}% de acerto ({rate_warn:.1f}% com warnings) | {executed:.0f}% executado",
         bold=True,
-        green=failed == 0 and done > 0,
+        green=failed == 0 and warned == 0 and done > 0,
+        yellow=failed == 0 and warned > 0,
         red=failed > 0,
     )
     _write_usage_summary(terminalreporter)
@@ -78,7 +101,7 @@ def _write_usage_summary(terminalreporter) -> None:
     """Soma os tokens que cada caso registrou em user_properties e estima o custo da rodada."""
     records = [
         value
-        for key in ("passed", "failed")
+        for key in ("passed", WARNED, "failed")
         for report in terminalreporter.stats.get(key, [])
         if report.when == "call"
         for name, value in report.user_properties

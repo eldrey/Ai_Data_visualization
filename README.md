@@ -208,7 +208,7 @@ The suite covers settings, SQL guard, AST validation, data sources (DuckDB, and 
 - **Dataset**: CSVs for a fictional chain of 10 coffee shops in Curitiba (2024–2025). There are tables for sales, order items, purchases, operating costs, employees and stores, and the values are consistent across tables. Load `tests/evals/data` in the app as a CSV source.
 - **Test cases**: 80 cases split into `cases_dev.yaml` (64) and `cases_test.yaml` (16). Each case has the user request, the selected tables, a reference SQL query and the expected chart type. Cases cover single-table queries, joins, and delete/edit requests that the read-only app must refuse or answer with a plain `SELECT`.
 - **Answer key**: the expected monthly profit for each store, in `tests/evals/gabarito/`.
-- **Evaluator**: `tests/evals/evaluation_run.py` runs each case through the real generation flow, using the LLM configured in `config/settings.yaml`. It compares the query results with the reference, checks the chart type, and prints a pytest-style report.
+- **Evaluator**: `tests/evals/evaluation_run.py` runs each case through the real generation flow, using the LLM configured in `config/settings.yaml`. It compares the query results with the reference, checks the chart type, and prints a pytest-style report. Each case ends as `PASSED`, `FAILED` or `WARNING`; `WARNING` means the same data came back in another table layout (pivoted).
 
 ```bash
 make eval                    # dev split; same as: uv run pytest --eval dev
