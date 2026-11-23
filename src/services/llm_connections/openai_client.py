@@ -5,7 +5,7 @@ from __future__ import annotations
 import openai
 
 from src.config.settings import LLMConfig
-from src.services.llm_connections.base import LLMClient, LLMError
+from src.services.llm_connections.base import LLMClient, LLMError, as_count
 
 
 class OpenAIClient(LLMClient):
@@ -20,6 +20,11 @@ class OpenAIClient(LLMClient):
             input=user,
             max_output_tokens=self.cfg.max_tokens,
         )
+        usage = getattr(response, "usage", None)
+        cached = as_count(getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", 0))
+        # Na OpenAI, input_tokens já inclui os tokens lidos do cache.
+        self._record_usage(as_count(getattr(usage, "input_tokens", 0)) - cached,
+                           getattr(usage, "output_tokens", 0), cached)
         text = response.output_text
         if not text:
             raise LLMError("Resposta vazia da OpenAI.")

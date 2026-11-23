@@ -6,7 +6,7 @@ from google import genai
 from google.genai import types
 
 from src.config.settings import LLMConfig
-from src.services.llm_connections.base import LLMClient, LLMError
+from src.services.llm_connections.base import LLMClient, LLMError, as_count
 
 
 class GeminiClient(LLMClient):
@@ -23,6 +23,14 @@ class GeminiClient(LLMClient):
                 temperature=self.cfg.temperature,
                 max_output_tokens=self.cfg.max_tokens,
             ),
+        )
+        meta = getattr(response, "usage_metadata", None)
+        cached = as_count(getattr(meta, "cached_content_token_count", 0))
+        # prompt_token_count inclui o cache; tokens de raciocínio são cobrados como saída.
+        self._record_usage(
+            as_count(getattr(meta, "prompt_token_count", 0)) - cached,
+            as_count(getattr(meta, "candidates_token_count", 0)) + as_count(getattr(meta, "thoughts_token_count", 0)),
+            cached,
         )
         text = response.text
         if not text:

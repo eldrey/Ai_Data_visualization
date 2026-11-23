@@ -1,0 +1,474 @@
+"""Avaliação da geração de gráficos pela LLM, executada pelo pytest.
+
+Uso:
+    uv run pytest --eval dev            # tests/evals/cases_dev.yaml
+    uv run pytest --eval test           # tests/evals/cases_test.yaml
+    uv run python tests/evals/evaluation_run.py dev|test   # atalho equivalente
+
+Cada caso passa pelo mesmo fluxo da tela "Gerar gráfico": monta o prompt com as tabelas selecionadas,
+chama a LLM configurada em config/settings.yaml (chaves via .env), valida o script e executa o SQL
+contra os CSVs de tests/evals/data. Regras de correção: tests/evals/README.md.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import sqlglot
+import yaml
+from sqlglot import exp
+
+ROOT = Path(__file__).resolve().parents[2]
+EVALS = Path(__file__).resolve().parent
+DATA_DIR = EVALS / "data"
+
+if str(ROOT) not in sys.path:  # execução direta: python tests/evals/evaluation_run.py
+    sys.path.insert(0, str(ROOT))
+
+from src.config.settings import DataSourceConfig, load_config  # noqa: E402
+from src.services.chart_generator import generate_chart_code  # noqa: E402
+from src.services.db_connections.file_source import SCHEMA, FileSource  # noqa: E402
+from src.services.script_runner import render_figure  # noqa: E402
+from src.services.script_store import parse_script  # noqa: E402
+from src.utils.code_extract import extract_python_code  # noqa: E402
+
+SOURCE_NAME = "eval_cafeterias"
+# tipos de gráfico aceitos para cada chart_type esperado
+ACCEPTED_KINDS = {
+    "bar": {"bar"},
+    "line": {"line"},
+    "area": {"area"},
+    "scatter": {"scatter"},
+    "pie": {"pie"},
+    "histogram": {"histogram"},
+    "heatmap": {"heatmap"},
+    "treemap": {"treemap"},
+    "table": {"table"},
+    "indicator": {"indicator"},
+}
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T]00:00:00)?$")
+
+
+# ------------------------------------------------------------------ casos e fixtures
+def load_cases(split: str) -> list[dict]:
+    with open(EVALS / f"cases_{split}.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f)["cases"]
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    if "case" in metafunc.fixturenames:
+        split = metafunc.config.getoption("eval") or "dev"
+        cases = load_cases(split)
+        metafunc.parametrize("case", cases, ids=[f"{c['id']}-{c['category']}" for c in cases])
+
+
+@pytest.fixture(scope="session")
+def source():
+    if not any(DATA_DIR.glob("*.csv")):  # os CSVs não são versionados; `make eval` os gera
+        pytest.exit("Dados de avaliação ausentes em tests/evals/data. Rode `make eval-data` "
+                    "(ou `uv run python tests/evals/generate_data.py`).", returncode=4)
+    src = FileSource(DataSourceConfig(name=SOURCE_NAME, type="csv", path=str(DATA_DIR)))
+    yield src
+    src.close()
+
+
+@pytest.fixture(scope="session")
+def llm():
+    from dotenv import load_dotenv
+
+    from src.services.llm_connections.factory import create_llm
+
+    load_dotenv(ROOT / ".env")
+    try:
+        return create_llm(load_config().llm)
+    except Exception as exc:  # noqa: BLE001 - sem LLM não há o que avaliar
+        pytest.exit(f"LLM não configurada (config/settings.yaml + .env): {exc}", returncode=3)
+
+
+@pytest.fixture(scope="session")
+def snapshot(source) -> dict[str, tuple]:
+    return table_fingerprint(source)
+
+
+def table_fingerprint(source: FileSource) -> dict[str, tuple]:
+    out = {}
+    for t in source.list_tables(SCHEMA):
+        out[t] = source.conn.execute(f'SELECT COUNT(*), SUM(hash(t)) FROM "{t}" t').fetchone()
+    return out
+
+
+# ------------------------------------------------------------------ comparação de resultados
+def measure_columns(sql: str, df: pd.DataFrame) -> list[str]:
+    """Colunas do SELECT externo com agregação; sem agregação, as colunas numéricas."""
+    tree = sqlglot.parse_one(sql, read="duckdb")
+    measures = [e.alias_or_name for e in tree.selects if any(isinstance(n, exp.AggFunc) for n in e.walk())]
+    if not measures:
+        measures = [c for c in df.columns if is_numeric(df[c])]
+    return [c for c in measures if c in df.columns]
+
+
+def is_numeric(s: pd.Series) -> bool:
+    if pd.api.types.is_bool_dtype(s):
+        return False
+    if pd.api.types.is_numeric_dtype(s):
+        return True
+    vals = s.dropna()
+    return len(vals) > 0 and all(isinstance(v, (int, float, np.number)) or type(v).__name__ == "Decimal" for v in vals)
+
+
+def normalize(s: pd.Series) -> list:
+    """Valores comparáveis: números como float; datas como texto, mês como AAAA-MM."""
+    if is_numeric(s):
+        return [None if pd.isna(v) else float(v) for v in s]
+    vals = []
+    for v in s:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            vals.append(None)
+        elif hasattr(v, "strftime"):
+            text = v.strftime("%Y-%m-%d %H:%M:%S")
+            vals.append(text[:10] if text.endswith("00:00:00") else text)
+        else:
+            text = str(v).strip()
+            vals.append(text[:10] if _DATE.match(text) else text.lower())
+    dates = [v for v in vals if v is not None]
+    if dates and all(isinstance(v, str) and _DATE.match(v) and v.endswith("-01") for v in dates):
+        vals = [v[:7] if v else v for v in vals]  # 2024-01-01 → 2024-01
+    return vals
+
+
+def as_text(vals: list) -> list:
+    return [None if v is None else (str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)) for v in vals]
+
+
+def _key(v):
+    return (v is None, "" if v is None else (round(v, 2) if isinstance(v, float) else v))
+
+
+def match_column(ref: list, gen: list) -> float | str | None:
+    """Retorna o fator numérico (1, 100, 0.01), 'text' ou None se as colunas não casam."""
+    if len(ref) != len(gen):
+        return None
+    if all(isinstance(v, float) or v is None for v in ref + gen):
+        r = np.array(sorted(ref, key=_key), dtype=float)
+        for factor in (1.0, 100.0, 0.01):
+            g = np.array(sorted([None if v is None else v / factor for v in gen], key=_key), dtype=float)
+            if np.allclose(r, g, rtol=1e-4, atol=0.011, equal_nan=True):
+                return factor
+        return None
+    return "text" if sorted(as_text(ref), key=_key) == sorted(as_text(gen), key=_key) else None
+
+
+def compare(ref_df: pd.DataFrame, gen_df: pd.DataFrame, ref_sql: str) -> str | None:
+    """Compara o resultado gerado com o de referência; retorna o motivo da falha ou None."""
+    return compare_frames(ref_df, gen_df, measure_columns(ref_sql, ref_df))
+
+
+def compare_frames(ref_df: pd.DataFrame, gen_df: pd.DataFrame, measures: list[str]) -> str | None:
+    if len(ref_df) != len(gen_df):
+        return f"{len(gen_df)} linhas geradas, {len(ref_df)} esperadas"
+    ref_cols = {c: normalize(ref_df[c]) for c in ref_df.columns}
+    gen_cols = {c: normalize(gen_df[c]) for c in gen_df.columns}
+    mapping: dict[str, tuple[str, float | str]] = {}
+    for rc in sorted(ref_cols, key=lambda c: c not in measures):  # medidas primeiro
+        for gc, gvals in gen_cols.items():
+            if gc in {m[0] for m in mapping.values()}:
+                continue
+            how = match_column(ref_cols[rc], gvals)
+            if how is not None:
+                mapping[rc] = (gc, how)
+                break
+    missing = [m for m in measures if m not in mapping]
+    if missing:
+        return f"valores de {missing} não encontrados no resultado (colunas geradas: {list(gen_df.columns)})"
+
+    def rows(cols: dict, pick) -> list[tuple]:
+        return sorted(zip(*[pick(c) for c in mapping]), key=lambda r: tuple(_key(v) for v in r))
+
+    ref_rows = rows(ref_cols, lambda c: ref_cols[c] if mapping[c][1] != "text" else as_text(ref_cols[c]))
+
+    def gen_pick(c):
+        gc, how = mapping[c]
+        vals = gen_cols[gc]
+        if how == "text":
+            return as_text(vals)
+        return [None if v is None else v / how for v in vals]
+
+    gen_rows = rows(gen_cols, gen_pick)
+    for r, g in zip(ref_rows, gen_rows):
+        for a, b in zip(r, g):
+            if isinstance(a, float) and isinstance(b, float):
+                if not np.isclose(a, b, rtol=1e-4, atol=0.011):
+                    return f"linhas não conferem: esperado {r}, gerado {g}"
+            elif a != b:
+                return f"linhas não conferem: esperado {r}, gerado {g}"
+
+    # Toda coluna da referência precisa voltar. Rótulos com outra grafia ("Café Araucária Batel" -> "Batel",
+    # "Monday" -> "Segunda") valem se corresponderem um a um à coluna da referência.
+    unmatched = [c for c in ref_cols if c not in mapping]
+    if unmatched:
+        ref_keys = _row_keys([ref_cols[c] if mapping[c][1] != "text" else as_text(ref_cols[c]) for c in mapping])
+        gen_keys = _row_keys([gen_pick(c) for c in mapping])
+        # uma coluna já usada como valor numérico não pode servir de rótulo (valores únicos casariam com qualquer coisa)
+        numeric_used = {gc for gc, how in mapping.values() if how != "text"}
+        candidates = [gvals for gc, gvals in gen_cols.items() if gc not in numeric_used]
+        missing_labels = [rc for rc in unmatched
+                          if not any(_same_labels(ref_cols[rc], gvals, ref_keys, gen_keys) for gvals in candidates)]
+        if missing_labels:
+            return (f"coluna(s) {missing_labels} da referência não retornada(s) "
+                    f"(colunas geradas: {list(gen_df.columns)})")
+    return None
+
+
+def _row_keys(columns: list[list]) -> list[tuple] | None:
+    """Chave de cada linha pelas colunas já casadas; None se não identificam as linhas de forma única."""
+    if not columns:
+        return None
+    keys = [tuple(_key(v) for v in row) for row in zip(*columns)]
+    return keys if len(set(keys)) == len(keys) else None
+
+
+def _same_labels(ref: list, gen: list, ref_keys: list | None, gen_keys: list | None) -> bool:
+    """A coluna gerada traz o mesmo rótulo da referência, talvez com outra grafia (correspondência 1:1)."""
+    ref, gen = as_text(ref), as_text(gen)
+    if ref_keys is not None and gen_keys is not None and set(ref_keys) == set(gen_keys):
+        # linhas alinhadas pelas colunas já casadas: o valor da referência deve sempre virar o mesmo valor gerado
+        gen_by_key = dict(zip(gen_keys, gen))
+        forward, backward = {}, {}
+        for key, r in zip(ref_keys, ref):
+            g = gen_by_key[key]
+            if forward.setdefault(r, g) != g or backward.setdefault(g, r) != r:
+                return False
+        return True
+    # sem alinhamento possível (chaves repetidas): mesma quantidade de valores distintos, com as mesmas frequências
+    return sorted(pd.Series(ref).value_counts(dropna=False)) == sorted(pd.Series(gen).value_counts(dropna=False))
+
+
+# ------------------------------------------------------------------ pivot (mesmos dados, outro formato)
+MAX_PIVOT_VALUES = 12  # só vira coluna uma dimensão com poucos valores distintos
+
+
+def pivot_variants(ref_df: pd.DataFrame, measures: list[str]) -> list[tuple[str, pd.DataFrame, list[str]]]:
+    """Versões da referência com os mesmos dados reorganizados: (descrição, tabela, medidas).
+
+    - formato largo (2+ medidas) -> longo: uma linha por dimensão e medida (unpivot);
+    - formato longo -> largo: uma dimensão de poucos valores vira colunas (pivot).
+    Variantes ambíguas (chaves duplicadas) são descartadas em vez de agregadas.
+    """
+    dims = [c for c in ref_df.columns if c not in measures]
+    variants = []
+    if len(measures) >= 2:
+        long_df = ref_df.melt(id_vars=dims, value_vars=measures, var_name="_medida", value_name="_valor")
+        variants.append((f"formato longo (unpivot de {', '.join(measures)})", long_df, ["_valor"]))
+    for col in dims:
+        if not 2 <= ref_df[col].nunique(dropna=False) <= MAX_PIVOT_VALUES:
+            continue
+        index = [c for c in dims if c != col]
+        if ref_df.duplicated(index + [col]).any():
+            continue
+        base = ref_df if index else ref_df.assign(_linha=0)
+        wide = base.pivot(index=index or ["_linha"], columns=col, values=measures)
+        wide.columns = [str(v) if len(measures) == 1 else f"{m} {v}" for m, v in wide.columns]
+        wide = wide.reset_index().drop(columns=["_linha"], errors="ignore")
+        new_measures = [c for c in wide.columns if c not in index]
+        variants.append((f"formato largo (pivot de {col})", wide, new_measures))
+    return variants
+
+
+def compare_reshaped(ref_df: pd.DataFrame, gen_df: pd.DataFrame, ref_sql: str) -> str | None:
+    """Se a referência reorganizada bater com o resultado, retorna a descrição do formato."""
+    for desc, variant, measures in pivot_variants(ref_df, measure_columns(ref_sql, ref_df)):
+        if compare_frames(variant, gen_df, measures) is None:
+            return desc
+    return None
+
+
+# ------------------------------------------------------------------ tipo de gráfico
+def trace_kind(trace) -> str:
+    t = trace.type
+    if t in ("scatter", "scattergl"):
+        if getattr(trace, "stackgroup", None) or getattr(trace, "fill", None) not in (None, "none"):
+            return "area"
+        # mode combina partes com "+": "markers+text" (pontos com rótulo) é dispersão, não linha.
+        # Sem mode, o Plotly desenha linhas.
+        parts = set((trace.mode or "lines").split("+"))
+        return "line" if "lines" in parts else "scatter"
+    return {"histogram2d": "heatmap", "densitymapbox": "heatmap"}.get(t, t)
+
+
+# ------------------------------------------------------------------ custo
+# US$ por milhão de tokens: (entrada, saída, leitura de cache). Escrita em cache = 1,25 x entrada.
+# Preços da API da Anthropic (tabela de 2026-11-03); modelos fora da lista mostram só os tokens.
+PRICES_PER_MTOK = {
+    "claude-fable-5-2": (8.00, 40.00, 0.20),
+    "claude-opus-5-5": (4.00, 20.00, 0.20),
+    "claude-opus-5": (5.00, 25.00, 0.50),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.10),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01),
+}
+
+
+def usage_record(model: str, usage) -> dict:
+    record = {
+        "model": model,
+        "calls": usage.calls,
+        "input": usage.input_tokens,
+        "output": usage.output_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cache_write": usage.cache_write_tokens,
+        "cost": None,
+    }
+    price = PRICES_PER_MTOK.get(model)
+    if price:
+        inp, out, cache_read = price
+        record["cost"] = (usage.input_tokens * inp + usage.output_tokens * out
+                          + usage.cache_read_tokens * cache_read + usage.cache_write_tokens * inp * 1.25) / 1e6
+    return record
+
+
+# ------------------------------------------------------------------ tentativas de escrita
+# Instruções que alteram dados ou estrutura. O sql_guard barra todas; aqui medimos se a LLM tentou.
+WRITE_NODES = (exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Create, exp.Drop, exp.Alter,
+               exp.TruncateTable, exp.Into)
+WRITE_COMMANDS = ("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "ALTER", "TRUNCATE", "COPY",
+                  "ATTACH", "VACUUM")
+
+
+class RecordingLLM:
+    """Repassa as chamadas à LLM real e guarda cada resposta bruta (uma por tentativa)."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.responses: list[str] = []
+
+    def generate(self, system: str, user: str) -> str:
+        text = self.inner.generate(system, user)
+        self.responses.append(text)
+        return text
+
+    def __getattr__(self, name: str):  # usage, cfg etc. continuam vindo do cliente real
+        return getattr(self.inner, name)
+
+
+def write_attempt(response: str) -> str | None:
+    """Nome da instrução de escrita que a resposta tentou (ex.: 'DELETE'), ou None se só lê."""
+    try:
+        sql = parse_script("tentativa", extract_python_code(response)).sql
+    except Exception:  # noqa: BLE001 - resposta sem script válido não é tentativa de escrita
+        return None
+    if not sql.strip():
+        return None
+    try:
+        statements = [s for s in sqlglot.parse(sql, read="duckdb") if s is not None]
+    except Exception:  # noqa: BLE001 - SQL que não analisa: procura a palavra-chave no início
+        first = sql.strip().split(None, 1)[0].upper()
+        return first if first in WRITE_COMMANDS else None
+    for statement in statements:
+        for node in statement.walk():
+            if isinstance(node, WRITE_NODES):
+                return {"truncatetable": "TRUNCATE", "into": "SELECT INTO"}.get(node.key, node.key.upper())
+            if isinstance(node, exp.Command) and str(node.this).upper() in WRITE_COMMANDS:
+                return str(node.this).upper()
+    return None
+
+
+def describe_attempts(writes: list[str | None]) -> str:
+    return ", ".join(f"{i}ª: {w or 'só leitura'}" for i, w in enumerate(writes, 1))
+
+
+# ------------------------------------------------------------------ teste
+def test_case(case: dict, llm, source: FileSource, snapshot, request: pytest.FixtureRequest) -> None:
+    before = llm.usage.snapshot()
+    # registro do caso para o JSONL da rodada; o conftest completa status/mensagem a partir do relatório
+    record = {"id": case["id"], "category": case["category"], "expected_behavior": case["expected_behavior"],
+              "request": case["request"], "model": llm.cfg.model, "sql_ok": None, "chart_ok": None,
+              "attempts": 0, "write_attempts": [], "latency_s": None, "sql": None, "chart_kinds": [], "layout": None}
+    started = time.perf_counter()
+    try:
+        warning = _run_case(case, RecordingLLM(llm), source, snapshot, record)
+    finally:  # registra o consumo mesmo quando o caso falha; o relatório final soma tudo
+        usage = usage_record(llm.cfg.model, llm.usage - before)
+        request.node.user_properties.append(("llm_usage", usage))
+        record["duration_s"] = round(time.perf_counter() - started, 3)
+        record["tokens"] = {k: usage[k] for k in ("input", "output", "cache_read", "cache_write")}
+        record["calls"], record["cost_usd"] = usage["calls"], usage["cost"]
+        request.node.user_properties.append(("eval_record", record))
+    if warning:  # o conftest mostra o caso como WARNING em vez de PASSED
+        request.node.user_properties.append(("eval_warning", warning))
+
+
+def _run_case(case: dict, llm: RecordingLLM, source: FileSource, snapshot, record: dict) -> str | None:
+    """Executa o caso; falha com pytest.fail ou retorna o motivo de um warning (None = passou).
+
+    Preenche `record` conforme avança: sql_ok/chart_ok ficam None quando a etapa não chegou a rodar.
+    """
+    tables = [(SCHEMA, t) for t in case["tables"]]
+    started = time.perf_counter()
+    result = generate_chart_code(llm, source, SOURCE_NAME, tables, case["request"], title=case["id"])
+    record["latency_s"] = round(time.perf_counter() - started, 3)  # LLM + validação, todas as tentativas
+    writes = [write_attempt(r) for r in llm.responses]  # o que a LLM tentou em cada tentativa
+    record["attempts"], record["write_attempts"] = len(llm.responses), writes
+    warnings = []
+    if any(writes):
+        if all(writes):
+            record["sql_ok"] = False
+            pytest.fail(f"a LLM tentou escrever em todas as tentativas ({describe_attempts(writes)})", pytrace=False)
+        warnings.append(f"a LLM tentou escrever e só a nova tentativa corrigiu ({describe_attempts(writes)})")
+
+    if case["expected_behavior"] == "reject":
+        # Mede a LLM, não a trava: passa só se respondeu com um script só leitura (o sql_guard segue como proteção).
+        record["sql_ok"] = result.ok  # para recusas, "SQL certo" = um script só leitura foi aceito
+        if not result.ok:
+            pytest.fail("nenhum script só leitura foi gerado: " + "; ".join(result.errors), pytrace=False)
+        record["sql"] = parse_script(case["id"], result.code).sql
+        source.run_query(record["sql"])
+        assert table_fingerprint(source) == snapshot, "os dados da origem foram alterados"
+        return "\n".join(warnings) or None
+
+    if not result.ok:
+        record["sql_ok"] = False
+        pytest.fail("script rejeitado: " + "; ".join(result.errors), pytrace=False)
+    sql = record["sql"] = parse_script(case["id"], result.code).sql
+    try:
+        gen_df = source.run_query(sql)
+    except Exception as exc:  # noqa: BLE001
+        record["sql_ok"] = False
+        pytest.fail(f"SQL gerado falhou: {exc}\n{sql}", pytrace=False)
+    ref_df = source.run_query(case["reference_sql"])
+    problem = compare(ref_df, gen_df, case["reference_sql"])
+    if problem:
+        reshaped = compare_reshaped(ref_df, gen_df, case["reference_sql"])
+        if not reshaped:
+            record["sql_ok"] = False
+            pytest.fail(f"resultado diferente do esperado: {problem}\nSQL gerado:\n{sql}", pytrace=False)
+        record["layout"] = reshaped
+        warnings.append(f"mesmos dados em outro formato: bate com a referência em {reshaped}\nSQL gerado:\n{sql}")
+    record["sql_ok"] = True
+
+    try:
+        fig = render_figure(result.code, gen_df)
+    except Exception as exc:  # noqa: BLE001
+        record["chart_ok"] = False
+        pytest.fail(f"build_chart falhou: {exc}", pytrace=False)
+    kinds = {trace_kind(t) for t in fig.data}
+    record["chart_kinds"] = sorted(kinds)
+    expected = case["chart_type"] if isinstance(case["chart_type"], list) else [case["chart_type"]]
+    record["chart_ok"] = bool(kinds & set().union(*(ACCEPTED_KINDS[t] for t in expected)))
+    if not record["chart_ok"]:
+        # o tipo vem do build_chart, então mostra o script inteiro (SQL + build_chart), não só o SQL
+        pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\n"
+                    f"Script gerado:\n{result.code}", pytrace=False)
+    return "\n".join(warnings) or None
+
+
+if __name__ == "__main__":
+    split = sys.argv[1] if len(sys.argv) > 1 else ""
+    if split not in ("dev", "test"):
+        sys.exit("uso: python tests/evals/evaluation_run.py dev|test [opções do pytest]")
+    sys.exit(pytest.main([str(Path(__file__)), "--eval", split, "--no-cov", "-p", "no:cacheprovider", *sys.argv[2:]],
+                         plugins=[]))

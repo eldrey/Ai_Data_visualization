@@ -89,6 +89,59 @@ def test_gemini_empty(mocker):
         GeminiClient(LLMConfig(provider="gemini", api_key="k"), client=sdk).generate("s", "u")
 
 
+def test_anthropic_records_usage(mocker):
+    sdk = mocker.MagicMock()
+    usage = SimpleNamespace(input_tokens=100, output_tokens=40, cache_read_input_tokens=7,
+                            cache_creation_input_tokens=None)
+    sdk.beta.messages.create.return_value = SimpleNamespace(stop_reason="end_turn", content=[text_block("ok")],
+                                                            usage=usage)
+    client = AnthropicClient(LLMConfig(api_key="k"), client=sdk)
+    client.generate("s", "u")
+    client.generate("s", "u")
+    u = client.usage
+    assert (u.calls, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens) == (2, 200, 80, 14, 0)
+
+
+def test_anthropic_records_usage_on_refusal(mocker):
+    sdk = mocker.MagicMock()
+    sdk.beta.messages.create.return_value = SimpleNamespace(
+        stop_reason="refusal", content=[], usage=SimpleNamespace(input_tokens=50, output_tokens=3)
+    )
+    client = AnthropicClient(LLMConfig(api_key="k"), client=sdk)
+    with pytest.raises(LLMError):
+        client.generate("s", "u")
+    assert (client.usage.input_tokens, client.usage.output_tokens) == (50, 3)
+
+
+def test_usage_without_sdk_counts(mocker):
+    sdk = mocker.MagicMock()
+    sdk.messages.create.return_value = SimpleNamespace(stop_reason="end_turn", content=[text_block("x")])
+    client = AnthropicClient(LLMConfig(api_key="k", model="claude-haiku-5-5"), client=sdk)
+    before = client.usage.snapshot()
+    client.generate("s", "u")
+    diff = client.usage - before
+    assert (diff.calls, diff.input_tokens, diff.output_tokens) == (1, 0, 0)
+
+
+def test_openai_records_usage(mocker):
+    sdk = mocker.MagicMock()
+    usage = SimpleNamespace(input_tokens=120, output_tokens=30, input_tokens_details=SimpleNamespace(cached_tokens=20))
+    sdk.responses.create.return_value = SimpleNamespace(output_text="r", usage=usage)
+    client = OpenAIClient(LLMConfig(provider="openai", api_key="k"), client=sdk)
+    client.generate("s", "u")
+    assert (client.usage.input_tokens, client.usage.output_tokens, client.usage.cache_read_tokens) == (100, 30, 20)
+
+
+def test_gemini_records_usage(mocker):
+    sdk = mocker.MagicMock()
+    meta = SimpleNamespace(prompt_token_count=90, candidates_token_count=25, thoughts_token_count=15,
+                           cached_content_token_count=10)
+    sdk.models.generate_content.return_value = SimpleNamespace(text="oi", usage_metadata=meta)
+    client = GeminiClient(LLMConfig(provider="gemini", api_key="k"), client=sdk)
+    client.generate("s", "u")
+    assert (client.usage.input_tokens, client.usage.output_tokens, client.usage.cache_read_tokens) == (80, 40, 10)
+
+
 @pytest.mark.parametrize(
     "provider, cls",
     [("anthropic", AnthropicClient), ("openai", OpenAIClient), ("gemini", GeminiClient)],

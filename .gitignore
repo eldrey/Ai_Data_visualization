@@ -225,3 +225,6 @@ data/*
 !data/.gitkeep
 src/dashboards_scripts/*
 !src/dashboards_scripts/.gitkeep
+
+# Evaluation run results (one JSONL per run)
+tests/evals/results/

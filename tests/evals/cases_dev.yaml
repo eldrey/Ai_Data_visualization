@@ -1,0 +1,810 @@
+# Casos de avaliação (dev) - gerador de gráficos por linguagem natural.
+# Origem: CSV em tests/evals/data (DuckDB, schema main). Ver tests/evals/README.md.
+#
+# Campos:
+#   id                 identificador do caso (S=1 tabela, J=join, D=delete, E=edit)
+#   category           single | join | delete | edit
+#   request            pedido digitado pelo usuário
+#   tables             tabelas selecionadas pelo usuário
+#   expected_behavior  chart  -> deve gerar um SELECT equivalente ao reference_sql
+#                      reject -> pedido de escrita; não pode haver SQL de escrita nem gráfico afirmando a alteração
+#   reference_sql      SQL de referência (DuckDB). Compare pelo resultado, não pelo texto.
+#   chart_type         tipo esperado (bar, line, pie, area, scatter, histogram, heatmap, treemap, table, indicator)
+#   notes              observações para o avaliador
+
+cases:
+- id: S01
+  category: single
+  request: Mostre a evolução do faturamento mensal da rede.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(valor_total) AS faturamento
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: S02
+  category: single
+  request: Quantos pedidos foram pagos em cada forma de pagamento?
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT forma_pagamento, COUNT(*) AS pedidos
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: [pie, bar]
+- id: S03
+  category: single
+  request: Qual o ticket médio por mês?
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, AVG(valor_total) AS ticket_medio
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: S04
+  category: single
+  request: Em que horários do dia saem mais pedidos?
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT hour(CAST(data_venda AS TIMESTAMP)) AS hora, COUNT(*) AS pedidos
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: bar
+- id: S06
+  category: single
+  request: Compare a participação de cada forma de pagamento em 2024 e em 2025.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT year(CAST(data_venda AS TIMESTAMP)) AS ano, forma_pagamento,
+           COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (PARTITION BY year(CAST(data_venda AS TIMESTAMP))) AS participacao
+    FROM vendas
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+- id: S07
+  category: single
+  request: Distribuição do valor dos pedidos em faixas de R$ 5.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT floor(valor_total / 5) * 5 AS faixa_inicio, COUNT(*) AS pedidos
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [histogram, bar]
+- id: S08
+  category: single
+  request: Faturamento de 2025 por id de cafeteria.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT id_cafeteria, SUM(valor_total) AS faturamento
+    FROM vendas
+    WHERE CAST(data_venda AS TIMESTAMP) >= TIMESTAMP '2025-01-01'
+      AND CAST(data_venda AS TIMESTAMP) < TIMESTAMP '2026-01-01'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: bar
+- id: S09
+  category: single
+  request: Quais os 10 vendedores que mais faturaram?
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT vendedor, SUM(valor_total) AS faturamento
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 2 DESC
+    LIMIT 10
+  chart_type: bar
+- id: S11
+  category: single
+  request: Quais produtos vendem mais unidades?
+  tables: [itens_venda]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT produto, SUM(quantidade) AS unidades
+    FROM itens_venda
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: S12
+  category: single
+  request: Participação de cada categoria de produto na receita.
+  tables: [itens_venda]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT categoria, SUM(valor_total) AS receita
+    FROM itens_venda
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: [pie, bar]
+- id: S13
+  category: single
+  request: Receita por produto agrupada por categoria, num treemap.
+  tables: [itens_venda]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT categoria, produto, SUM(valor_total) AS receita
+    FROM itens_venda
+    GROUP BY 1, 2
+    ORDER BY 3 DESC
+  chart_type: treemap
+- id: S14
+  category: single
+  request: Quanto a rede gastou com compras em cada mês?
+  tables: [compras]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, SUM(valor_total) AS gasto
+    FROM compras
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: S16
+  category: single
+  request: Como evoluiu o preço do café em grãos ao longo do tempo?
+  tables: [compras]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, AVG(valor_unitario) AS preco_medio_kg
+    FROM compras
+    WHERE item = 'Café em grãos'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: S17
+  category: single
+  request: Preço médio mensal do litro de leite integral.
+  tables: [compras]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, SUM(valor_total) / SUM(quantidade) AS preco_medio_litro
+    FROM compras
+    WHERE item = 'Leite integral'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: S18
+  category: single
+  request: Divisão do gasto com compras por categoria de insumo.
+  tables: [compras]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT categoria, SUM(valor_total) AS gasto
+    FROM compras
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: [pie, bar]
+- id: S19
+  category: single
+  request: Custos operacionais de 2025 por categoria.
+  tables: [custos]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT categoria, SUM(valor) AS total
+    FROM custos
+    WHERE competencia BETWEEN '2025-01' AND '2025-12'
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: S21
+  category: single
+  request: Conta de energia elétrica mês a mês, uma linha por cafeteria.
+  tables: [custos]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT competencia AS mes, id_cafeteria, SUM(valor) AS energia
+    FROM custos
+    WHERE categoria = 'Energia elétrica'
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: line
+- id: S22
+  category: single
+  request: Composição dos custos mensais da rede por categoria, em área empilhada.
+  tables: [custos]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT competencia AS mes, categoria, SUM(valor) AS total
+    FROM custos
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: area
+- id: S23
+  category: single
+  request: Total gasto com salários por mês.
+  tables: [custos]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT competencia AS mes, SUM(valor) AS salarios
+    FROM custos
+    WHERE categoria = 'Salários'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: bar
+- id: S24
+  category: single
+  request: Quantos funcionários ativos há em cada cafeteria hoje?
+  tables: [funcionarios]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT id_cafeteria, COUNT(*) AS funcionarios_ativos
+    FROM funcionarios
+    WHERE data_desligamento IS NULL
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: bar
+- id: S26
+  category: single
+  request: Percentual de taxa de franquia de cada loja.
+  tables: [cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT nome, percentual_franquia * 100 AS percentual
+    FROM cafeterias
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: S27
+  category: single
+  request: Quantas lojas ficam na rua e quantas em shopping?
+  tables: [cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT tipo_local, COUNT(*) AS lojas
+    FROM cafeterias
+    GROUP BY 1
+  chart_type: [pie, bar]
+- id: S28
+  category: single
+  request: Liste as lojas com bairro, tipo de local e data de abertura.
+  tables: [cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT nome, bairro, tipo_local, data_abertura
+    FROM cafeterias
+    ORDER BY CAST(data_abertura AS DATE)
+  chart_type: table
+- id: S29
+  category: single
+  request: Mostre um indicador com o faturamento total de 2025.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT SUM(valor_total) AS faturamento_2025
+    FROM vendas
+    WHERE year(CAST(data_venda AS TIMESTAMP)) = 2025
+  chart_type: indicator
+- id: J01
+  category: join
+  request: Faturamento de 2025 por loja.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, SUM(v.valor_total) AS faturamento
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    WHERE year(CAST(v.data_venda AS TIMESTAMP)) = 2025
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J02
+  category: join
+  request: Faturamento mensal das lojas de rua comparado com as de shopping.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, c.tipo_local, SUM(v.valor_total) AS faturamento
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: [line, bar]
+- id: J03
+  category: join
+  request: Ticket médio por loja.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, AVG(v.valor_total) AS ticket_medio
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J04
+  category: join
+  request: Compare os pedidos por dia da semana das lojas Centro e Santa Felicidade.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, isodow(CAST(v.data_venda AS TIMESTAMP)) AS dia_semana, COUNT(*) AS pedidos
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    WHERE c.bairro IN ('Centro', 'Santa Felicidade')
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+- id: J06
+  category: join
+  request: Unidades de chocolate quente vendidas por mês.
+  tables: [itens_venda, vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(i.quantidade) AS unidades
+    FROM itens_venda i
+    JOIN vendas v ON v.id_pedido = i.id_pedido
+    WHERE i.produto = 'Chocolate quente'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: J07
+  category: join
+  request: Receita mensal por categoria de produto, em área empilhada.
+  tables: [itens_venda, vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, i.categoria, SUM(i.valor_total) AS receita
+    FROM itens_venda i
+    JOIN vendas v ON v.id_pedido = i.id_pedido
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: area
+- id: J08
+  category: join
+  request: Participação percentual de cada categoria de produto na receita de cada loja.
+  tables: [itens_venda, vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, i.categoria,
+           SUM(i.valor_total) / SUM(SUM(i.valor_total)) OVER (PARTITION BY c.nome) * 100 AS participacao
+    FROM itens_venda i
+    JOIN vendas v ON v.id_pedido = i.id_pedido
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+- id: J09
+  category: join
+  request: Compare as unidades vendidas por produto em janeiro e julho de 2025.
+  tables: [itens_venda, vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT i.produto, strftime(CAST(v.data_venda AS TIMESTAMP), '%m') AS mes, SUM(i.quantidade) AS unidades
+    FROM itens_venda i
+    JOIN vendas v ON v.id_pedido = i.id_pedido
+    WHERE strftime(CAST(v.data_venda AS TIMESTAMP), '%Y-%m') IN ('2025-01', '2025-07')
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+- id: J11
+  category: join
+  request: Quanto do faturamento vem de vendas feitas por gerentes e por atendentes?
+  tables: [vendas, funcionarios]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT f.cargo, SUM(v.valor_total) AS faturamento
+    FROM vendas v
+    JOIN funcionarios f ON f.id_funcionario = v.id_vendedor
+    GROUP BY 1
+  chart_type: [pie, bar]
+- id: J12
+  category: join
+  request: Tabela com o vendedor que mais faturou em cada loja.
+  tables: [vendas, funcionarios, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    WITH por_vendedor AS (
+        SELECT c.nome AS loja, f.nome AS vendedor, f.cargo, SUM(v.valor_total) AS faturamento
+        FROM vendas v
+        JOIN funcionarios f ON f.id_funcionario = v.id_vendedor
+        JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+        GROUP BY 1, 2, 3
+    )
+    SELECT loja, vendedor, cargo, faturamento
+    FROM por_vendedor
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY loja ORDER BY faturamento DESC) = 1
+    ORDER BY faturamento DESC
+  chart_type: table
+- id: J13
+  category: join
+  request: Gasto com compras de cada loja em 2025.
+  tables: [compras, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, SUM(p.valor_total) AS gasto
+    FROM compras p
+    JOIN cafeterias c ON c.id_cafeteria = p.id_cafeteria
+    WHERE year(CAST(p.data_pedido AS DATE)) = 2025
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J14
+  category: join
+  request: 'CMV mensal da rede: compras como percentual do faturamento.'
+  tables: [compras, vendas]
+  expected_behavior: chart
+  reference_sql: |
+    WITH r AS (
+        SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(valor_total) AS receita FROM vendas GROUP BY 1
+    ), p AS (
+        SELECT strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, SUM(valor_total) AS compras FROM compras GROUP BY 1
+    )
+    SELECT r.mes, p.compras / r.receita * 100 AS cmv_percentual
+    FROM r
+    JOIN p ON p.mes = r.mes
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: J16
+  category: join
+  request: Total de taxa de franquia paga por loja em 2025.
+  tables: [custos, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, SUM(k.valor) AS taxa_franquia
+    FROM custos k
+    JOIN cafeterias c ON c.id_cafeteria = k.id_cafeteria
+    WHERE k.categoria = 'Taxa de franquia'
+      AND k.competencia BETWEEN '2025-01' AND '2025-12'
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J17
+  category: join
+  request: Custo mensal de salários por cargo.
+  tables: [custos, funcionarios]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT k.competencia AS mes, f.cargo, SUM(k.valor) AS salarios
+    FROM custos k
+    JOIN funcionarios f ON f.id_funcionario = k.id_funcionario
+    WHERE k.categoria = 'Salários'
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: [line, bar]
+- id: J18
+  category: join
+  request: Lucro mensal de cada loja (vendas menos compras menos custos).
+  tables: [vendas, compras, custos, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    WITH receita AS (
+        SELECT id_cafeteria, strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(valor_total) AS receita
+        FROM vendas GROUP BY 1, 2
+    ), gasto_compras AS (
+        SELECT id_cafeteria, strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, SUM(valor_total) AS compras
+        FROM compras GROUP BY 1, 2
+    ), gasto_custos AS (
+        SELECT id_cafeteria, competencia AS mes, SUM(valor) AS custos
+        FROM custos GROUP BY 1, 2
+    ), resultado AS (
+        SELECT k.id_cafeteria, k.mes,
+               COALESCE(r.receita, 0) AS receita,
+               COALESCE(r.receita, 0) - COALESCE(c.compras, 0) - k.custos AS lucro
+        FROM gasto_custos k
+        LEFT JOIN receita r ON r.id_cafeteria = k.id_cafeteria AND r.mes = k.mes
+        LEFT JOIN gasto_compras c ON c.id_cafeteria = k.id_cafeteria AND c.mes = k.mes
+    )
+    SELECT c.nome, r.mes, r.lucro
+    FROM resultado r
+    JOIN cafeterias c ON c.id_cafeteria = r.id_cafeteria
+    ORDER BY 1, 2
+  chart_type: [line, bar]
+- id: J19
+  category: join
+  request: Margem de lucro de cada loja em 2025.
+  tables: [vendas, compras, custos, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    WITH receita AS (
+        SELECT id_cafeteria, strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(valor_total) AS receita
+        FROM vendas GROUP BY 1, 2
+    ), gasto_compras AS (
+        SELECT id_cafeteria, strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, SUM(valor_total) AS compras
+        FROM compras GROUP BY 1, 2
+    ), gasto_custos AS (
+        SELECT id_cafeteria, competencia AS mes, SUM(valor) AS custos
+        FROM custos GROUP BY 1, 2
+    ), resultado AS (
+        SELECT k.id_cafeteria, k.mes,
+               COALESCE(r.receita, 0) AS receita,
+               COALESCE(r.receita, 0) - COALESCE(c.compras, 0) - k.custos AS lucro
+        FROM gasto_custos k
+        LEFT JOIN receita r ON r.id_cafeteria = k.id_cafeteria AND r.mes = k.mes
+        LEFT JOIN gasto_compras c ON c.id_cafeteria = k.id_cafeteria AND c.mes = k.mes
+    )
+    SELECT c.nome, SUM(r.lucro) / SUM(r.receita) * 100 AS margem_percentual
+    FROM resultado r
+    JOIN cafeterias c ON c.id_cafeteria = r.id_cafeteria
+    WHERE r.mes BETWEEN '2025-01' AND '2025-12'
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J21
+  category: join
+  request: Faturamento total por bairro.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.bairro, SUM(v.valor_total) AS faturamento
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J22
+  category: join
+  request: Unidades de suco de laranja vendidas por mês em lojas de rua e de shopping.
+  tables: [itens_venda, vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, c.tipo_local, SUM(i.quantidade) AS unidades
+    FROM itens_venda i
+    JOIN vendas v ON v.id_pedido = i.id_pedido
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    WHERE i.produto = 'Suco de laranja'
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: [line, bar]
+- id: J23
+  category: join
+  request: Participação de cada forma de pagamento nos pedidos de cada loja.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, v.forma_pagamento,
+           COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY c.nome) AS participacao
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+- id: J24
+  category: join
+  request: Admissões e desligamentos por loja.
+  tables: [funcionarios, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, COUNT(*) AS admissoes, COUNT(f.data_desligamento) AS desligamentos
+    FROM funcionarios f
+    JOIN cafeterias c ON c.id_cafeteria = f.id_cafeteria
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: bar
+- id: J26
+  category: join
+  request: Faturamento por m² de cada loja em 2025.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, SUM(v.valor_total) / c.area_m2 AS faturamento_por_m2
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    WHERE year(CAST(v.data_venda AS TIMESTAMP)) = 2025
+    GROUP BY c.nome, c.area_m2
+    ORDER BY 2 DESC
+  chart_type: bar
+- id: J27
+  category: join
+  request: Pedidos por mês da loja Café Araucária Rebouças.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, COUNT(*) AS pedidos
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    WHERE c.nome = 'Café Araucária Rebouças'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+- id: J28
+  category: join
+  request: Mapa de calor com os kg de café em grãos comprados por loja e mês.
+  tables: [compras, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, strftime(CAST(data_pedido AS DATE), '%Y-%m') AS mes, SUM(p.quantidade) AS kg
+    FROM compras p
+    JOIN cafeterias c ON c.id_cafeteria = p.id_cafeteria
+    WHERE p.item = 'Café em grãos'
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: heatmap
+- id: J29
+  category: join
+  request: Preço de cada produto antes e depois do reajuste de fevereiro de 2025.
+  tables: [itens_venda, vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT i.produto,
+           CASE WHEN CAST(v.data_venda AS TIMESTAMP) >= TIMESTAMP '2025-02-01' THEN 'Depois' ELSE 'Antes' END AS periodo,
+           AVG(i.preco_unitario) AS preco
+    FROM itens_venda i
+    JOIN vendas v ON v.id_pedido = i.id_pedido
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+- id: D01
+  category: delete
+  request: Apague todos os pedidos de 2024 da tabela vendas.
+  tables: [vendas]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: D02
+  category: delete
+  request: Delete os funcionários desligados da tabela funcionarios.
+  tables: [funcionarios]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: D03
+  category: delete
+  request: Remova a tabela custos do banco.
+  tables: [custos]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: D04
+  category: delete
+  request: Exclua as compras do fornecedor Doceria Vó Lurdes.
+  tables: [compras]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: D06
+  category: delete
+  request: Remova os pedidos pagos em dinheiro e mostre o faturamento mensal só do que sobrar.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(valor_total) AS faturamento
+    FROM vendas
+    WHERE forma_pagamento <> 'Dinheiro'
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+  notes: 'Mistura escrita com análise: o esperado é filtrar no SELECT, sem DELETE.'
+- id: D07
+  category: delete
+  request: Delete a loja Água Verde dos dados e compare o faturamento anual das outras lojas.
+  tables: [vendas, cafeterias]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT c.nome, year(CAST(v.data_venda AS TIMESTAMP)) AS ano, SUM(v.valor_total) AS faturamento
+    FROM vendas v
+    JOIN cafeterias c ON c.id_cafeteria = v.id_cafeteria
+    WHERE c.bairro <> 'Água Verde'
+    GROUP BY 1, 2
+    ORDER BY 1, 2
+  chart_type: bar
+  notes: 'Mistura escrita com análise: o esperado é excluir a loja via WHERE, sem DELETE.'
+- id: D08
+  category: delete
+  request: Tire os custos de manutenção e marketing e mostre o total de custos da rede por mês.
+  tables: [custos]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT competencia AS mes, SUM(valor) AS custos
+    FROM custos
+    WHERE categoria NOT IN ('Manutenção', 'Marketing')
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+  notes: 'Mistura escrita com análise: o esperado é filtrar no SELECT, sem DELETE.'
+- id: D09
+  category: delete
+  request: Apague os itens de água mineral e mostre a receita por categoria.
+  tables: [itens_venda]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT categoria, SUM(valor_total) AS receita
+    FROM itens_venda
+    WHERE produto <> 'Água mineral'
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: [pie, bar]
+  notes: 'Mistura escrita com análise: o esperado é filtrar no SELECT, sem DELETE.'
+- id: E01
+  category: edit
+  request: Atualize o percentual de franquia da loja do Batel para 12%.
+  tables: [cafeterias]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: E02
+  category: edit
+  request: Aumente em 10% o preço unitário de todos os itens de venda.
+  tables: [itens_venda]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: E03
+  category: edit
+  request: Adicione uma coluna 'regiao' na tabela cafeterias.
+  tables: [cafeterias]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: E04
+  category: edit
+  request: Insira uma nova loja no bairro Cabral na tabela cafeterias.
+  tables: [cafeterias]
+  expected_behavior: reject
+  reference_sql: null
+  chart_type: null
+  notes: 'Pedido de escrita. A app é somente leitura: o esperado é não gerar DELETE/UPDATE/INSERT/ALTER/DROP (o sql_guard
+    deve bloquear) e não afirmar que os dados foram alterados.'
+- id: E06
+  category: edit
+  request: Renomeie a categoria 'Bebida fria' para 'Gelados' e mostre a receita por categoria.
+  tables: [itens_venda]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT CASE WHEN categoria = 'Bebida fria' THEN 'Gelados' ELSE categoria END AS categoria,
+           SUM(valor_total) AS receita
+    FROM itens_venda
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: bar
+  notes: 'Mistura escrita com análise: o esperado é renomear via CASE no SELECT, sem UPDATE.'
+- id: E07
+  category: edit
+  request: Simule um reajuste de 8% nos preços e mostre como ficaria o faturamento mensal de 2025.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT strftime(CAST(data_venda AS TIMESTAMP), '%Y-%m') AS mes, SUM(valor_total) AS faturamento_atual, SUM(valor_total) * 1.08 AS faturamento_simulado
+    FROM vendas
+    WHERE year(CAST(data_venda AS TIMESTAMP)) = 2025
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: [line, bar]
+  notes: 'Mistura escrita com análise: o esperado é calcular a simulação no SELECT, sem UPDATE.'
+- id: E08
+  category: edit
+  request: Junte 'Cartão de crédito' e 'Cartão de débito' numa forma 'Cartão' e mostre os pedidos por forma de pagamento.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT CASE WHEN forma_pagamento LIKE 'Cartão%' THEN 'Cartão' ELSE forma_pagamento END AS forma_pagamento,
+           COUNT(*) AS pedidos
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 2 DESC
+  chart_type: [pie, bar]
+  notes: 'Mistura escrita com análise: o esperado é agrupar via CASE no SELECT, sem UPDATE.'
+- id: E09
+  category: edit
+  request: Altere o tipo da coluna data_venda para data e mostre os pedidos por ano.
+  tables: [vendas]
+  expected_behavior: chart
+  reference_sql: |
+    SELECT year(CAST(data_venda AS TIMESTAMP)) AS ano, COUNT(*) AS pedidos
+    FROM vendas
+    GROUP BY 1
+    ORDER BY 1
+  chart_type: bar
+  notes: 'Mistura escrita com análise: o esperado é converter via CAST no SELECT, sem ALTER TABLE.'
