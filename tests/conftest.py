@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +23,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Roda a avaliação da LLM com tests/evals/cases_<split>.yaml em vez dos testes unitários.",
     )
+    parser.addoption(
+        "--eval-output",
+        default=None,
+        help="Arquivo JSONL com um registro por caso (padrão: tests/evals/results/<split>_<data-hora>.jsonl).",
+    )
+
+
+RESULTS_PATH = pytest.StashKey[Path]()
+RUN_ID = pytest.StashKey[str]()
 
 
 def _eval_split(config: pytest.Config) -> str | None:
@@ -29,6 +40,10 @@ def _eval_split(config: pytest.Config) -> str | None:
 
 def pytest_configure(config: pytest.Config) -> None:
     if _eval_split(config):
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output = config.getoption("eval_output") or EVALS_DIR / "results" / f"{_eval_split(config)}_{run_id}.jsonl"
+        config.stash[RUN_ID] = run_id
+        config.stash[RESULTS_PATH] = Path(output)
         config.option.verbose = max(config.option.verbose, 1)  # uma linha por caso
         # cobertura (e sua meta de 60%) só faz sentido para os testes unitários
         cov = config.pluginmanager.get_plugin("_cov")
@@ -62,6 +77,47 @@ def pytest_report_teststatus(report, config: pytest.Config):
     return None
 
 
+def pytest_runtest_logreport(report) -> None:
+    """Grava uma linha no JSONL da rodada assim que cada caso termina (uma rodada interrompida não se perde)."""
+    config = _current_config
+    if config is None or not _eval_split(config):
+        return
+    setup_error = report.when == "setup" and report.failed
+    if report.when != "call" and not setup_error:
+        return
+    record = next((v for k, v in report.user_properties if k == "eval_record"), None) or {
+        "id": report.nodeid.rsplit("[", 1)[-1].split("-", 1)[0].rstrip("]")
+    }
+    if setup_error:
+        status = "error"
+    elif report.failed:
+        status = "failed"
+    else:
+        status = "warning" if _eval_warning(report) else "passed"
+    line = {
+        "run_id": config.stash[RUN_ID],
+        "split": _eval_split(config),
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "status": status,
+        "passed": status in ("passed", "warning"),
+        **record,
+        "message": _eval_warning(report) if status == "warning" else (report.longreprtext or None),
+    }
+    path = config.stash[RESULTS_PATH]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
+
+
+_current_config: pytest.Config | None = None
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    global _current_config  # pytest_runtest_logreport não recebe o config
+    _current_config = session.config
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
     split = _eval_split(config)
     if not split:
@@ -91,6 +147,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Co
         red=failed > 0,
     )
     _write_usage_summary(terminalreporter)
+    results = config.stash.get(RESULTS_PATH, None)
+    if results is not None and results.exists():
+        terminalreporter.write_line(f"Resultados por caso: {results}")
 
 
 def _fmt_int(n: int) -> str:

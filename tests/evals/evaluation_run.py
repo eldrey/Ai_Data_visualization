@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -383,55 +384,82 @@ def describe_attempts(writes: list[str | None]) -> str:
 # ------------------------------------------------------------------ teste
 def test_case(case: dict, llm, source: FileSource, snapshot, request: pytest.FixtureRequest) -> None:
     before = llm.usage.snapshot()
+    # registro do caso para o JSONL da rodada; o conftest completa status/mensagem a partir do relatório
+    record = {"id": case["id"], "category": case["category"], "expected_behavior": case["expected_behavior"],
+              "request": case["request"], "model": llm.cfg.model, "sql_ok": None, "chart_ok": None,
+              "attempts": 0, "write_attempts": [], "latency_s": None, "sql": None, "chart_kinds": [], "layout": None}
+    started = time.perf_counter()
     try:
-        warning = _run_case(case, RecordingLLM(llm), source, snapshot)
+        warning = _run_case(case, RecordingLLM(llm), source, snapshot, record)
     finally:  # registra o consumo mesmo quando o caso falha; o relatório final soma tudo
-        request.node.user_properties.append(("llm_usage", usage_record(llm.cfg.model, llm.usage - before)))
+        usage = usage_record(llm.cfg.model, llm.usage - before)
+        request.node.user_properties.append(("llm_usage", usage))
+        record["duration_s"] = round(time.perf_counter() - started, 3)
+        record["tokens"] = {k: usage[k] for k in ("input", "output", "cache_read", "cache_write")}
+        record["calls"], record["cost_usd"] = usage["calls"], usage["cost"]
+        request.node.user_properties.append(("eval_record", record))
     if warning:  # o conftest mostra o caso como WARNING em vez de PASSED
         request.node.user_properties.append(("eval_warning", warning))
 
 
-def _run_case(case: dict, llm: RecordingLLM, source: FileSource, snapshot) -> str | None:
-    """Executa o caso; falha com pytest.fail ou retorna o motivo de um warning (None = passou)."""
+def _run_case(case: dict, llm: RecordingLLM, source: FileSource, snapshot, record: dict) -> str | None:
+    """Executa o caso; falha com pytest.fail ou retorna o motivo de um warning (None = passou).
+
+    Preenche `record` conforme avança: sql_ok/chart_ok ficam None quando a etapa não chegou a rodar.
+    """
     tables = [(SCHEMA, t) for t in case["tables"]]
+    started = time.perf_counter()
     result = generate_chart_code(llm, source, SOURCE_NAME, tables, case["request"], title=case["id"])
+    record["latency_s"] = round(time.perf_counter() - started, 3)  # LLM + validação, todas as tentativas
     writes = [write_attempt(r) for r in llm.responses]  # o que a LLM tentou em cada tentativa
+    record["attempts"], record["write_attempts"] = len(llm.responses), writes
     warnings = []
     if any(writes):
         if all(writes):
+            record["sql_ok"] = False
             pytest.fail(f"a LLM tentou escrever em todas as tentativas ({describe_attempts(writes)})", pytrace=False)
         warnings.append(f"a LLM tentou escrever e só a nova tentativa corrigiu ({describe_attempts(writes)})")
 
     if case["expected_behavior"] == "reject":
         # Mede a LLM, não a trava: passa só se respondeu com um script só leitura (o sql_guard segue como proteção).
+        record["sql_ok"] = result.ok  # para recusas, "SQL certo" = um script só leitura foi aceito
         if not result.ok:
             pytest.fail("nenhum script só leitura foi gerado: " + "; ".join(result.errors), pytrace=False)
-        source.run_query(parse_script(case["id"], result.code).sql)
+        record["sql"] = parse_script(case["id"], result.code).sql
+        source.run_query(record["sql"])
         assert table_fingerprint(source) == snapshot, "os dados da origem foram alterados"
         return "\n".join(warnings) or None
 
     if not result.ok:
+        record["sql_ok"] = False
         pytest.fail("script rejeitado: " + "; ".join(result.errors), pytrace=False)
-    sql = parse_script(case["id"], result.code).sql
+    sql = record["sql"] = parse_script(case["id"], result.code).sql
     try:
         gen_df = source.run_query(sql)
     except Exception as exc:  # noqa: BLE001
+        record["sql_ok"] = False
         pytest.fail(f"SQL gerado falhou: {exc}\n{sql}", pytrace=False)
     ref_df = source.run_query(case["reference_sql"])
     problem = compare(ref_df, gen_df, case["reference_sql"])
     if problem:
         reshaped = compare_reshaped(ref_df, gen_df, case["reference_sql"])
         if not reshaped:
+            record["sql_ok"] = False
             pytest.fail(f"resultado diferente do esperado: {problem}\nSQL gerado:\n{sql}", pytrace=False)
+        record["layout"] = reshaped
         warnings.append(f"mesmos dados em outro formato: bate com a referência em {reshaped}\nSQL gerado:\n{sql}")
+    record["sql_ok"] = True
 
     try:
         fig = render_figure(result.code, gen_df)
     except Exception as exc:  # noqa: BLE001
+        record["chart_ok"] = False
         pytest.fail(f"build_chart falhou: {exc}", pytrace=False)
     kinds = {trace_kind(t) for t in fig.data}
+    record["chart_kinds"] = sorted(kinds)
     expected = case["chart_type"] if isinstance(case["chart_type"], list) else [case["chart_type"]]
-    if not kinds & set().union(*(ACCEPTED_KINDS[t] for t in expected)):
+    record["chart_ok"] = bool(kinds & set().union(*(ACCEPTED_KINDS[t] for t in expected)))
+    if not record["chart_ok"]:
         # o tipo vem do build_chart, então mostra o script inteiro (SQL + build_chart), não só o SQL
         pytest.fail(f"tipo de gráfico {sorted(kinds)}, esperado {' ou '.join(expected)}\n"
                     f"Script gerado:\n{result.code}", pytrace=False)

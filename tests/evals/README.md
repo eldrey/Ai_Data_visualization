@@ -62,6 +62,32 @@ tests/evals/evaluation_run.py::test_case[J24-join] WARNING               [ 68%]
 
 The failure section shows why each case failed (wrong values, row count, chart type, rejected script) and the generated SQL.
 
+### Results file (JSONL)
+
+Each run writes one JSON line per case to `tests/evals/results/<split>_<YYYYmmdd-HHMMSS>.jsonl`. A line is written as soon as its case ends, so an interrupted run keeps what it finished. The report prints the file path at the end. Use `--eval-output <path>` to choose another file. The `results/` folder is git-ignored.
+
+| Field | Meaning |
+| --- | --- |
+| `run_id`, `split`, `timestamp`, `model` | Which run, split and model the line belongs to |
+| `id`, `category`, `expected_behavior`, `request` | The test case |
+| `status` | `passed`, `warning`, `failed`, or `error` (setup failure, such as a missing API key) |
+| `passed` | `true` for `passed` and `warning` |
+| `sql_ok` | The generated SQL returned the right data, including after a pivot. For `reject` cases, a read-only script was accepted. `null` if the case stopped before this check. |
+| `chart_ok` | The figure has an accepted chart type. `null` if not checked (for `reject` cases, or when the case failed earlier). |
+| `attempts` | LLM calls for the case. `2` means the first answer was rejected and retried. |
+| `write_attempts` | One entry per attempt: the write statement it tried (`"DELETE"`…) or `null` for read-only |
+| `latency_s` | Time to generate the script: LLM calls plus validation, over all attempts |
+| `duration_s` | Total time of the case, including running the SQL and the chart |
+| `tokens`, `calls`, `cost_usd` | Measured token usage (`input`, `output`, `cache_read`, `cache_write`) and estimated cost (`null` without a price) |
+| `sql`, `chart_kinds`, `layout` | The generated SQL, the chart types found, and the matched layout when it was a pivot |
+| `message` | The failure or warning message (`null` when passed) |
+
+For example, to list the failures of the latest dev run:
+
+```bash
+jq -c 'select(.status == "failed") | {id, sql_ok, chart_ok, attempts}' "$(ls -t tests/evals/results/dev_*.jsonl | head -1)"
+```
+
 ## Test cases
 
 Each case in `cases_dev.yaml` and `cases_test.yaml` has these fields:
